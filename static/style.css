@@ -1,0 +1,619 @@
+:root {
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --panel-2: #f1efe8;
+  --line: rgba(0, 0, 0, .12);
+  --line-soft: rgba(0, 0, 0, .07);
+  --text: #23231f;
+  --text-2: #5f5e5a;
+  --text-3: #8a8880;
+  --accent: #185fa5;
+  --accent-bg: #e6f1fb;
+  --danger: #a32d2d;
+  --danger-bg: #fcebeb;
+  --ok: #0f6e56;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: .5px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover { background: #f3f3f0; border-color: rgba(0, 0, 0, .22); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #134e88; }
+button.danger { color: var(--danger); border-color: rgba(163, 45, 45, .35); }
+button.danger:hover { background: var(--danger-bg); }
+button.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
+button.mini { font-size: 11px; padding: 3px 8px; border-radius: 7px; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+input, select, textarea {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: .5px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+  min-width: 0;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: none; line-height: 1.55; }
+
+.spacer { flex: 1; }
+
+/* ---------------- topbar ---------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: .5px solid var(--line);
+  flex: none;
+}
+.brand { font-size: 14px; font-weight: 600; }
+.room-title { font-size: 13px; color: var(--text-2); }
+.status {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: .5px solid var(--line);
+  color: var(--text-2);
+}
+.status.running { background: var(--accent-bg); border-color: rgba(24, 95, 165, .4); color: var(--accent); }
+.status.idle { background: #f1efe8; }
+.status.down { background: var(--danger-bg); border-color: rgba(163, 45, 45, .4); color: var(--danger); }
+.counter { font-size: 11px; color: var(--text-3); }
+
+/* ---------------- layout ---------------- */
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr) 268px;
+  min-height: 0;
+}
+.col { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); }
+.col-rooms { border-right: .5px solid var(--line); }
+.col-center { border-right: .5px solid var(--line); background: #fbfbfa; }
+.col-right { overflow-y: auto; }
+
+.col-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: .02em;
+  flex: none;
+}
+.col-head > span:first-child { flex: 1; }
+
+.list { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 8px; }
+/* 列表一律 flex:none（禁止被 flex 压缩）。
+   右栏是「固定高 + 内部滚动」的 flex 纵向容器，flex 子项默认 flex-shrink:1：
+   模型卡 + 厂商卡总高超过可视区时，列表会被压扁到接近 0 高，卡片内容从压扁的
+   盒子里溢出、画到后面的区块头上——就是「标题栏叠印在卡片上」的病根（10-13 实锤）。
+   曾经只保护了 #participantList，模型库 / 厂商列表漏了，导致越滚越乱。
+   flex:none 让每段保持自然高度，整列靠 .col-right 的滚动条滚。 */
+.col-rooms .list, .col-right .list { flex: none; }
+
+/* ---------------- 右栏可折叠区块（手风琴，各自独立） ---------------- */
+/* flex:none：区块本体也禁止压缩（配合上面的列表 flex:none，整列内容超出一律走滚动） */
+.rblock { display: flex; flex-direction: column; flex: none; }
+/* 1px 实边框：0.5px 在 Windows 125%/150% 缩放下会取整抖动，是滚动残影诱因之一 */
+.rblock + .rblock { border-top: 1px solid var(--line-soft); }
+/* 不透明背景 + 显式层叠：标题栏永远画在卡片之上，且自身重绘不依赖下层内容 */
+.rblock-head {
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+  position: relative; z-index: 2;
+  background: var(--panel);
+}
+.rblock-head:hover { background: #f2f1ee; }
+.rblock-arrow {
+  width: 0; height: 0; flex: none;
+  border-left: 4.5px solid var(--text-3);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+.rblock.collapsed .rblock-arrow { transform: rotate(-90deg); }
+.rblock-body { display: flex; flex-direction: column; }
+.rblock.collapsed .rblock-body { display: none; }
+
+.hint { padding: 4px 12px 12px; font-size: 11px; color: var(--text-3); line-height: 1.7; }
+
+/* ---------------- 左栏：规则 / 角色说明模块（只读展示注入给模型的提示词） ---------------- */
+/* 左栏内容（房间列表 + 说明模块）可能超出可视高，整列滚动，区块本体不参与压缩 */
+.col-rooms { overflow-y: auto; }
+.col-rooms .rblock { flex: none; }
+.col-rooms .rblock-head { border-top: 1px solid var(--line-soft); }
+.info-body { display: flex; flex-direction: column; gap: 5px; padding: 0 10px 10px; }
+.info-note { padding: 0 12px 8px; font-size: 10px; color: var(--text-3); line-height: 1.7; }
+.info-preamble { font-size: 11px; color: var(--text-3); line-height: 1.7; }
+.info-group { font-size: 10px; font-weight: 600; color: var(--text-3); letter-spacing: .04em; padding-top: 3px; }
+.info-item { display: flex; gap: 6px; font-size: 11px; line-height: 1.65; color: var(--text-2); }
+.info-idx {
+  flex: none; width: 14px; height: 14px; margin-top: 2px; border-radius: 4px;
+  background: #f1efe8; color: var(--text-3); font-size: 9px; text-align: center; line-height: 14px;
+}
+.info-role { font-size: 11px; line-height: 1.65; color: var(--text-2); }
+.info-text { min-width: 0; word-break: break-word; }
+.info-empty { font-size: 11px; color: var(--text-3); padding: 0 0 2px; }
+
+/* ---------------- room items ---------------- */
+
+.room {
+  position: relative;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: .5px solid transparent;
+}
+.room:hover { background: #f5f5f2; }
+.room.active { background: var(--accent-bg); border-color: rgba(24, 95, 165, .25); }
+.room-name { font-size: 12px; }
+.room.active .room-name { color: var(--accent); font-weight: 600; }
+.room-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.room-acts { display: none; gap: 2px; margin-top: 5px; }
+.room.active .room-acts, .room:hover .room-acts { display: flex; }
+
+/* ---------------- 回收站 ---------------- */
+
+.badge {
+  font-style: normal;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 5px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  display: inline-block;
+}
+.dlg-note { font-size: 11px; color: var(--text-2); line-height: 1.75; }
+.dlg-note b { color: var(--text); }
+.trash-item {
+  padding: 8px 10px;
+  border: .5px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel-2, #fafaf8);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.trash-item + .trash-item { margin-top: 6px; }
+.trash-main { flex: 1; min-width: 0; }
+.trash-name { font-size: 12px; }
+.trash-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.trash-acts { display: flex; gap: 4px; flex: none; }
+.trash-empty { font-size: 11px; color: var(--text-3); padding: 12px 4px; text-align: center; }
+
+/* ---------------- host bar ---------------- */
+
+.col-center { overflow: hidden; }
+.hostbar {
+  flex: none;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-bottom: .5px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.host-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.host-input-row textarea { flex: 1; max-height: 120px; padding: 7px 10px; }
+.host-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.host-actions .group { display: flex; align-items: center; gap: 6px; }
+.host-actions label { font-size: 11px; color: var(--text-2); }
+.host-actions input[type=number] { width: 52px; padding: 4px 6px; }
+.host-actions select { max-width: 160px; }
+.host-actions label.chk { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+.host-actions label.chk input { margin: 0; cursor: pointer; }
+.host-actions .group.on label.chk { color: var(--accent); }
+.runinfo { font-size: 11px; color: var(--text-2); min-height: 14px; }
+.runinfo b { color: var(--accent); font-weight: 600; }
+.runinfo .waiting { color: var(--accent); font-weight: 600; }
+
+/* ---------------- messages ---------------- */
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.empty { color: var(--text-3); font-size: 12px; padding: 24px 0; max-width: 460px; line-height: 1.8; }
+
+.msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.msg-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.msg-who { font-size: 12px; font-weight: 600; }
+.msg-meta { font-size: 11px; color: var(--text-3); }
+.chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: .5px solid var(--line);
+  color: var(--text-2);
+  background: #fff;
+}
+/* 发言类型的四条配色规则已随标签机制一并删除（2026-10-13）。
+   剩下的 .chip 基类仍被「新增模型 → 拉取列表」的候选模型按钮复用。 */
+.msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.msg.host .msg-body { color: var(--text); }
+.msg.host { border-left: 2px solid var(--line); padding-left: 10px; }
+.msg.error .msg-body { color: var(--danger); }
+.msg-acts { display: flex; gap: 6px; opacity: 0; }
+.msg:hover .msg-acts { opacity: 1; }
+.reason {
+  font-size: 11px;
+  color: var(--text-3);
+  background: #f1efe8;
+  border-radius: 8px;
+  padding: 6px 9px;
+  white-space: pre-wrap;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.reason summary { cursor: pointer; color: var(--text-2); }
+.caret {
+  display: inline-block;
+  width: 6px;
+  height: 13px;
+  background: var(--accent);
+  vertical-align: -2px;
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+.quote {
+  border-left: 2px solid rgba(24, 95, 165, .3);
+  padding: 3px 0 3px 8px;
+  font-size: 11px;
+  color: var(--text-2);
+  background: rgba(24, 95, 165, .04);
+}
+
+/* ---------------- right column cards ---------------- */
+
+.card {
+  padding: 7px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: #fff;
+  position: relative; z-index: 1;
+}
+.card.off { opacity: .5; }
+.card-top { display: flex; align-items: center; gap: 6px; }
+.card-name { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; min-width: 0; }
+/* 单行省略：模型库 / 厂商卡片用。副标题（模型 ID · 厂商）长短差一倍，
+   不截断会把卡片撑成 1~3 行高，按钮行高低不齐；截断后全文留在 title 里，悬停可看。 */
+.card-sub.one {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 两行截断：参与者卡片角色用。min-height 保证一行角色也占两行高，所有参与者卡片等高。 */
+.card-sub.two {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+  min-height: 2.9em;
+}
+.card-acts { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+.dot { width: 7px; height: 7px; border-radius: 999px; background: #c9c7c0; flex: none; }
+.dot.on { background: #1d9e75; }
+/* 「未核实」角标放在标题行：副标题怎么截断它都在，不会像以前那样被挤掉 */
+.tag-warn {
+  flex: none;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #854f0b;
+  background: #faeeda;
+  white-space: nowrap;
+}
+
+/* ---------------- dialog ---------------- */
+
+dialog {
+  border: .5px solid var(--line);
+  border-radius: 12px;
+  padding: 0;
+  background: #fff;
+  color: var(--text);
+  max-width: 520px;
+  width: calc(100% - 40px);
+}
+dialog::backdrop { background: rgba(0, 0, 0, .28); }
+.dlg { padding: 16px 18px; display: flex; flex-direction: column; gap: 11px; }
+.dlg h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label { font-size: 11px; color: var(--text-2); }
+.field .tip { color: var(--text-3); }
+.field.row2 { flex-direction: row; gap: 12px; }
+.field.row2 > span { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.field.row2 label { font-size: 11px; color: var(--text-2); }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > input { flex: 1; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.dlg-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.probe { font-size: 11px; white-space: pre-wrap; }
+.probe.ok { color: var(--ok); }
+.probe.bad { color: var(--danger); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chips .chip { cursor: pointer; }
+.list.pick { max-height: 300px; overflow-y: auto; padding: 0; }
+
+/* ---------------- toast ---------------- */
+
+.toast-wrap {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 50;
+}
+.toast {
+  background: #26261f;
+  color: #fff;
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  max-width: 380px;
+  line-height: 1.6;
+}
+.toast.bad { background: var(--danger); }
+
+/* ---------------- 多人讨论（2026-10-13） ---------------- */
+
+/* 登录门槛：没填昵称之前遮住整个界面，避免未署名就发言 */
+.gate {
+  position: fixed;
+  inset: 0;
+  background: rgba(35, 35, 31, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.gate[hidden] { display: none; }
+.gate-card {
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 22px 24px;
+  width: min(380px, 90vw);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
+}
+.gate-card h3 { margin: 0 0 8px; font-size: 15px; font-weight: 500; }
+.gate-note { margin: 0 0 14px; font-size: 12px; color: var(--text-2); line-height: 1.7; }
+
+/* 顶栏：我是谁 / 房间号 */
+.me {
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-radius: 20px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.me[hidden] { display: none; }
+.me b { font-weight: 500; color: var(--text); }
+.room-code {
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 2px 8px;
+  letter-spacing: .06em;
+}
+.room-code[hidden] { display: none; }
+
+/* 右栏小标题（真人 / 模型） */
+.sub-head {
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 2px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sub-head .tip { font-size: 11px; color: var(--text-3); }
+
+/* 真人成员卡片 */
+.person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: .5px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  margin-bottom: 5px;
+}
+.person.me { border-color: rgba(24, 95, 165, .45); background: var(--accent-bg); }
+.person .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person.off .pname { color: var(--text-3); }
+.person .pdot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: rgba(0, 0, 0, .18); flex: 0 0 auto;
+}
+.person .pdot.on { background: var(--ok); }
+.person .tick {
+  font-size: 11px; color: var(--text-3); flex: 0 0 auto;
+}
+.person .tick.done { color: var(--ok); font-weight: 500; }
+.badge-owner {
+  font-size: 10px;
+  background: #faeeda;
+  color: #854f0b;
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+}
+.badge-owner[hidden] { display: none; }
+
+/* 轮次进度 */
+.rprog {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.rprog b { font-weight: 500; color: var(--accent); }
+
+/* 按权限隐藏（房主专属按钮 / 区块） */
+.owner-only[hidden] { display: none !important; }
+
+/* 房间卡片上的成员行 */
+.room-sub .online { color: var(--ok); }
+
+/* 顶栏「离开房间」：没进房间时禁用（不是隐藏，免得布局跳一下） */
+#btnLeave:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 真人发言：自己的那条左边线用主色，一眼看出「这句是我说的」；
+   房主徽标跟在昵称后面（同名两人时靠它区分）。 */
+.msg.host.me { border-left: 2px solid rgba(24, 95, 165, .5); }
+.msg-head .badge-owner { margin-left: 2px; }
+
+/* ---------------- /admin：左侧分区导航 + 右侧单块面板（2026-10-15） ----------------
+   用户要求：「admin后台重新设计下排版，规则库 / 角色库 / 模型库 / 厂家·API key 库 /
+   用户库（昵称账号）/ 管理口令」，并把默认打开的分区定成「模型库」。
+   以前是六块手风琴全堆在一页里，长起来要一路滚，看不出「哪块归谁管」。 */
+
+.adminwrap {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  min-height: 0;
+}
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  background: var(--panel);
+  border-right: .5px solid var(--line);
+  overflow-y: auto;
+}
+.nav-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: .06em;
+  padding: 2px 10px 6px;
+}
+.navitem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+  white-space: normal;
+  font-size: 12px;
+  padding: 7px 10px;
+  border: .5px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+}
+.navitem:hover { background: #f2f1ee; border-color: transparent; }
+.navitem.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.navitem .nav-sub { font-size: 10px; font-style: normal; color: var(--text-3); font-weight: 400; }
+.navitem.active .nav-sub { color: rgba(24, 95, 165, .75); }
+.nav-foot {
+  margin-top: auto;
+  padding: 10px;
+  font-size: 10px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.admin-body {
+  overflow-y: auto;
+  min-width: 0;
+  background: #fbfbfa;
+}
+.apanel { display: none; padding: 16px 18px 32px; max-width: 900px; }
+.apanel.active { display: block; }
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.panel-head h3 { margin: 0; font-size: 14px; font-weight: 600; flex: none; }
+.panel-head .spacer { flex: 1; }
+.panel-note {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.8;
+  padding-bottom: 10px;
+}
+.panel-note b { color: var(--text-2); }
+.panel-acts { margin-top: 10px; }
+.apanel .list { padding: 0; }
+/* 卡片按自适应网格排：宽屏一行两张，窄屏自动变一列 */
+.list.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 8px;
+}
+.apanel textarea.wide {
+  width: 100%;
+  font: inherit;
+  line-height: 1.65;
+}
+.pwform { display: flex; flex-wrap: wrap; gap: 12px; max-width: 620px; }
+.pwform .field { flex: 1; min-width: 170px; }
+
+/* ---------------- 顶栏右上角用户区（2026-10-15）----------------
+   已登录：「我是 X」+「退出」；未登录：「登录」。用一个竖分隔线跟左边那排
+   房间操作按钮分开，视觉上归为「账号」而不是「房间」。 */
+.userbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: .5px solid var(--line);
+  flex: none;
+}
+.userbox .me { background: transparent; padding: 0; }
+.userbox .me[hidden] { display: none; }
+.userbox button[hidden] { display: none; }
+
+

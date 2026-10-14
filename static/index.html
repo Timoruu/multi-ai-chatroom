@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多模型聊天室</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="joinGate" class="gate" hidden>
+  <div class="gate-card">
+    <h3>进入聊天室</h3>
+    <p class="gate-note"><b>昵称就是你的账号，不需要密码</b>。
+      同一个昵称，换任何浏览器 / 设备进来都是同一个人 —— 你的成员身份和发言历史跟着昵称走。</p>
+    <div class="field">
+      <label>你的昵称</label>
+      <input id="gateNick" maxlength="24" placeholder="例如 老王">
+    </div>
+    <div id="gateError" class="probe"></div>
+    <div class="dlg-foot">
+      <button type="button" id="btnGateBrowse" class="ghost">先看看</button>
+      <span class="spacer"></span>
+      <button type="button" id="btnGateOk" class="primary">进入</button>
+    </div>
+  </div>
+</div>
+
+<header class="topbar">
+  <div class="brand">多模型聊天室</div>
+  <div class="room-title" id="roomTitle">—</div>
+  <div class="room-code" id="roomCode" hidden></div>
+  <div class="spacer"></div>
+  <div class="status idle" id="statusPill">连接中…</div>
+  <div class="counter" id="callCounter" title="全局调用次数（成本护栏按全局计数，不按房间）">调用 0</div>
+  <button id="btnExport">导出 Markdown</button>
+  <button id="btnLeave" class="ghost">离开房间</button>
+  <button id="btnClear" class="ghost owner-only">清空</button>
+  <!-- 右上角用户区（2026-10-15 用户要求）：已登录 = 「我是 X」+ 退出；未登录 = 登录 -->
+  <div class="userbox" id="userBox">
+    <span class="me" id="mePill" hidden></span>
+    <button id="btnUserLogin" class="mini primary" hidden title="用昵称进入（不需要密码）">登录</button>
+    <button id="btnUserLogout" class="mini ghost" hidden title="退出登录并离开房间">退出</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <aside class="col col-rooms">
+    <div class="col-head">
+      <span>房间</span>
+      <button id="btnTrash" class="mini owner-only" title="删掉的房间先到这里：可还原，也可彻底删除（进 Windows 回收站）">回收站<i class="badge" id="trashCount" hidden>0</i></button>
+      <button id="btnNewRoom" class="mini">新建</button>
+    </div>
+    <div id="roomList" class="list"></div>
+    <div class="hint">
+      <b>默认讨论室</b>是所有人共用的入口房间：<b>没有房主</b>，谁进去权限都一样
+      （添加模型 / 改房间设置 / 清空历史 / 自由讨论 / 移出成员都能用），也不能被删除。<br>
+      自己新建的房间默认<b>不放任何模型</b>，进去后到右栏「本房间参与者」点「添加模型」自己加；<br>
+      「复制」会连参与者一起复制，最省事。
+    </div>
+
+    <section class="rblock" data-key="rules">
+      <div class="col-head rblock-head" title="点击折叠 / 展开">
+        <span>规则</span>
+        <i class="rblock-arrow"></i>
+      </div>
+      <div class="rblock-body">
+        <div class="info-note">每个模型每次发言都会收到这份共享规则（system 提示词）。<br>
+          <b>只有管理员能在 /admin 里改</b>，普通用户只读。</div>
+        <div id="rulesBox" class="info-body"></div>
+      </div>
+    </section>
+
+    <section class="rblock" data-key="roles">
+      <div class="col-head rblock-head" title="点击折叠 / 展开">
+        <span>角色</span>
+        <i class="rblock-arrow"></i>
+      </div>
+      <div class="rblock-body">
+        <div class="info-note">给参与者选了角色后，它的 system 提示词里会多一行
+          「你在这场讨论里的角色：…」。<br>
+          设 / 换角色：右栏参与者卡片上的「角色」按钮（房主可用）。<br>
+          <b>角色库本身只有管理员能在 /admin 里增删改</b>。</div>
+        <div id="rolesBox" class="info-body"></div>
+      </div>
+    </section>
+  </aside>
+
+  <section class="col col-center">
+    <div class="hostbar">
+      <div class="host-input-row">
+        <textarea id="hostInput" rows="1"
+          placeholder="说一句（说完会点亮你）。房间里的人都说完，模型才开始依次回应；等不及就点「启动新一轮」。（Ctrl+Enter 发送）"></textarea>
+        <button id="btnSend" class="primary">发言</button>
+      </div>
+      <div class="host-actions">
+        <span class="group" title="开启后模型会依次各发言一次；关闭后只能点某位参与者的「发言」单独请他开口。">
+          <label class="chk"><input id="autoSpeak" type="checkbox" checked>自动轮流</label>
+        </span>
+        <span class="group owner-only" title="轮内间隔：上一位说完到下一位开口之间等待的秒数（最少 3 秒，最多 60 秒）。等待期间可以直接点「停止」打断，或点名让别人接着说。">
+          <label>间隔</label>
+          <input id="gapInput" type="number" min="3" max="60" step="1" value="3">
+          <label>秒</label>
+        </span>
+        <span class="group owner-only">
+          <label>自由讨论</label>
+          <input id="roundsInput" type="number" min="1" max="20" value="3">
+          <label>轮</label>
+          <button id="btnFree">开始</button>
+        </span>
+        <span class="group">
+          <label>总结者</label>
+          <select id="summarizerSelect"></select>
+          <button id="btnSummarize">指定总结</button>
+        </span>
+        <span class="spacer"></span>
+        <button id="btnStartRound" class="primary">启动新一轮</button>
+        <button id="btnStop" class="danger">停止发言</button>
+      </div>
+      <div class="runinfo" id="runInfo"></div>
+    </div>
+    <div id="messages" class="messages">
+      <div class="empty">还没有发言。在下面输入一个问题直接发（发送后参与者会依次各发言一次）；<br>
+        想单独请某位接着说，就点右侧他卡片上的「发言」，或用 @模型名。</div>
+    </div>
+  </section>
+
+  <aside class="col col-right">
+    <section class="rblock" data-key="participants">
+      <div class="col-head rblock-head" title="点击折叠 / 展开">
+        <span>本房间参与者</span>
+        <button id="btnAddParticipant" class="mini owner-only">添加模型</button>
+        <i class="rblock-arrow"></i>
+      </div>
+      <div class="rblock-body">
+        <div class="sub-head">真人<span class="tip" id="roundHint"></span>
+          <span class="spacer"></span>
+          <button id="btnMembers" class="mini owner-only" title="房主专用：查看 / 移出房间里的真人成员">管理成员</button>
+        </div>
+        <div id="peopleList" class="list"></div>
+        <div class="sub-head">模型</div>
+        <div id="participantList" class="list"></div>
+      </div>
+    </section>
+
+    <div class="hint">
+      模型库和厂商 / API Key 只能由管理员在 <b>/admin</b> 里维护；<br>
+      这里只列出已经配好的模型，供房主往房间里挑。
+    </div>
+  </aside>
+
+</main>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<dialog id="dlgRole">
+  <form method="dialog" class="dlg">
+    <h3 id="dlgRoleTitle">角色</h3>
+    <div class="field">
+      <label>这位在本房间里的角色 <span class="tip">（角色只在这里设；不选就是无角色）</span></label>
+      <select id="roleSelect"></select>
+    </div>
+    <div id="rolePreview" class="probe"></div>
+    <div class="dlg-foot">
+      <button type="button" id="btnRoleClear" class="mini">清除角色</button>
+      <span class="spacer"></span>
+      <button type="button" id="btnRoleCancel" class="ghost">取消</button>
+      <button type="button" id="btnRoleSave" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgParticipant">
+  <form method="dialog" class="dlg">
+    <h3>把模型加入本房间</h3>
+    <div id="pickModelList" class="list pick"></div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnPickCancel" class="ghost">取消</button>
+      <button type="button" id="btnPickAdd" class="primary">加入</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgRoom">
+  <form method="dialog" class="dlg">
+    <h3 id="dlgRoomTitle">新建房间</h3>
+    <div class="field">
+      <label>房间名</label>
+      <input id="rName" placeholder="例如 技术方案评审">
+    </div>
+    <div class="field">
+      <label class="check"><input id="rOpen" type="checkbox"> 公开房间（不要房间号，谁都能进）</label>
+      <span class="tip" id="rOpenNote">不勾＝私有房间：别人要输入 6 位房间号才能进来。</span>
+    </div>
+    <div class="dlg-note" id="rNewNote">新房间默认<b>不含任何模型参与者</b>，建好后请在右侧「本房间参与者」点「添加模型」自己挑。</div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnRoomCancel" class="ghost">取消</button>
+      <button type="button" id="btnRoomSave" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTrash">
+  <form method="dialog" class="dlg">
+    <h3>房间回收站</h3>
+    <div class="dlg-note">
+      删除的房间先放在这里，<b>配置和历史消息都还在</b>。<br>
+      「还原」＝原样搬回来；「彻底删除」＝交给 Windows 回收站，之后仍能在系统回收站里找回。
+    </div>
+    <div id="trashList" class="list pick"></div>
+    <div class="dlg-foot">
+      <button type="button" id="btnEmptyTrash" class="mini danger">全部彻底删除</button>
+      <span class="spacer"></span>
+      <button type="button" id="btnTrashClose" class="ghost">关闭</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgJoin">
+  <form method="dialog" class="dlg">
+    <h3 id="dlgJoinTitle">加入房间</h3>
+    <div class="dlg-note" id="joinNote">输入房主给你的 6 位房间号。</div>
+    <div class="field">
+      <label>房间号</label>
+      <input id="joinCode" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 位数字">
+    </div>
+    <div id="joinError" class="probe"></div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnJoinCancel" class="ghost">取消</button>
+      <button type="button" id="btnJoinOk" class="primary">加入</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgMembers">
+  <form method="dialog" class="dlg">
+    <h3>房间成员</h3>
+    <div class="dlg-note">房主能看到这个面板（<b>默认讨论室没有房主，所有人</b>都能看到）。<br>
+      移出成员后，他会立刻离开房间 —— 但他如果知道房间号，仍然可以再加进来（这是「请出去」，不是拉黑）。<br>
+      「移出」只是请出房间；要<b>全局删掉一个人（并禁止他再用这个昵称进来）</b>，去 <b>/admin</b> 的「用户库」。</div>
+    <div id="memberAdminList" class="list pick"></div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnMembersClose" class="ghost">关闭</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

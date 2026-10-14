@@ -1,0 +1,5 @@
+# 多模型聊天室 · 运行依赖（公网/容器部署用；本机自用也可以 install_deps.bat）
+# 只有三个，都是纯 Python，装完即用。
+fastapi>=0.110
+uvicorn[standard]>=0.27
+httpx>=0.26

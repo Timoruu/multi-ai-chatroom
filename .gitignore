@@ -1,0 +1,20 @@
+# 含明文 API Key，绝不提交
+config.json
+
+# 房间对话历史 + 昵称账号表（data/users.json 里是每个昵称的登录令牌）
+data/
+
+# 里面 5 家 api_key 全是明文（房间搬家前的 config.json 备份，2026-10-15）
+tools/_pre_rooms_migration_config.json
+# 线上状态的只读快照（含线上昵称表），属"数据"不属"源码"，随时可重新探
+tools/_online_rooms.json
+
+# 运行期日志与临时产物
+_*.log
+_*.txt
+*.pyc
+__pycache__/
+.venv/
+
+# 公网发布副本（含真实 Key）。它本来就在项目目录之外，写上只为万一挪了仓库根
+.deploy/

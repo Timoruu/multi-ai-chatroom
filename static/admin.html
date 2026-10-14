@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理后台 · 多模型聊天室</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">多模型聊天室 · 管理后台</div>
+  <div class="room-title" id="adminWho">未登录</div>
+  <div class="spacer"></div>
+  <button id="btnBack" class="ghost">回聊天室</button>
+  <button id="btnLogout" class="ghost" hidden>退出登录</button>
+</header>
+
+<!-- ============ 口令登录（未登录时只显示这个） ============ -->
+<div id="loginGate" class="gate" hidden>
+  <div class="gate-card">
+    <h3>管理员登录</h3>
+    <p class="gate-note">这里是 <b>/admin</b>：模型库、厂商 / API Key、规则库、角色库、
+      用户库、管理口令都只能在这里改。<br>
+      普通用户从首页 <b>/</b> 进来，看不到这些内容。</p>
+    <div class="field">
+      <label>管理口令</label>
+      <input id="adminPw" type="password" placeholder="管理口令" autocomplete="current-password">
+    </div>
+    <div id="loginError" class="probe"></div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnLogin" class="primary">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 登录后：左侧分区导航 + 右侧单块面板 ============ -->
+<main class="adminwrap" id="adminMain" hidden>
+
+  <nav class="admin-nav" id="adminNav">
+    <div class="nav-title">配置分区</div>
+    <button type="button" class="navitem" data-panel="rules">规则库<i class="nav-sub">共享 system 提示词</i></button>
+    <button type="button" class="navitem" data-panel="roles">角色库<i class="nav-sub">预置角色提示词</i></button>
+    <button type="button" class="navitem" data-panel="models">模型库<i class="nav-sub">全站唯一的模型表</i></button>
+    <button type="button" class="navitem" data-panel="providers">厂商 / API Key<i class="nav-sub">地址与各家密钥</i></button>
+    <button type="button" class="navitem" data-panel="users">用户库<i class="nav-sub">昵称账号</i></button>
+    <button type="button" class="navitem" data-panel="rooms">房间库<i class="nav-sub">全部房间（含别人建的）</i></button>
+    <button type="button" class="navitem" data-panel="password">管理口令<i class="nav-sub">登录 /admin 用</i></button>
+    <div class="nav-foot">左边选一块，右边只显示它。<br>普通用户从首页 <b>/</b> 进来，看不到这里的任何内容。</div>
+  </nav>
+
+  <section class="admin-body" id="adminBody">
+
+    <!-- ---------- 规则库 ---------- -->
+    <section class="apanel" data-panel="rules">
+      <div class="panel-head">
+        <h3>规则库</h3>
+        <span class="spacer"></span>
+        <span class="tip" id="rulesDirty"></span>
+        <button type="button" id="btnRulesReset" class="ghost">放弃修改</button>
+        <button type="button" id="btnRulesSave" class="primary">保存规则</button>
+      </div>
+      <div class="panel-note">每个模型每次发言都会收到这份共享提示词（system）。<br>
+        改完点「保存规则」<b>立刻生效，不用重启</b>；首页左栏的「规则」模块同步更新。</div>
+      <textarea id="rulesEdit" rows="16" class="wide"></textarea>
+    </section>
+
+    <!-- ---------- 角色库 ---------- -->
+    <section class="apanel" data-panel="roles">
+      <div class="panel-head">
+        <h3>角色库</h3>
+        <span class="spacer"></span>
+        <button type="button" id="btnNewRole" class="mini primary">新增角色</button>
+      </div>
+      <div class="panel-note">房主给房间参与者「设角色」时，选的就是这里的条目（按「分组」折叠展示）。<br>
+        ⚠️ 删掉一个还有人在用的角色，那些参与者会变成「未设置角色」（不会崩，但设定丢了）。</div>
+      <div id="roleAdminList" class="list grid2"></div>
+    </section>
+
+    <!-- ---------- 模型库 ---------- -->
+    <section class="apanel" data-panel="models">
+      <div class="panel-head">
+        <h3>模型库</h3>
+        <span class="spacer"></span>
+        <button type="button" id="btnNewModel" class="mini primary">新增模型</button>
+      </div>
+      <div class="panel-note">这里是<b>全站唯一的模型库</b>，各房间只是「引用」其中的条目。<br>
+        每张卡片都要写对「模型 ID」和 base_url —— 探活失败九成是这两处，别先怀疑代码。<br>
+        ⚠️ 删掉一条 = 所有引用它的房间参与者名单里也会被摘掉（会二次确认）。</div>
+      <div id="modelList" class="list grid2"></div>
+    </section>
+
+    <!-- ---------- 厂商 / API Key ---------- -->
+    <section class="apanel" data-panel="providers">
+      <div class="panel-head">
+        <h3>厂商 / API Key</h3>
+        <span class="spacer"></span>
+        <button type="button" id="btnReload" class="mini" title="重新读取 config.json（手工改过文件后用）">重载 config.json</button>
+      </div>
+      <div class="panel-note">Key 只存在本机 <b>config.json</b>，不会上传任何地方；页面里也只显示前 6 位 + 后 4 位的提示。<br>
+        增加厂商预设 / 改 base_url 要手工改 config.json，改完点右上「重载」。</div>
+      <div id="providerList" class="list grid2"></div>
+    </section>
+
+    <!-- ---------- 用户库（昵称账号） ---------- -->
+    <section class="apanel" data-panel="users">
+      <div class="panel-head">
+        <h3>用户库（昵称账号）</h3>
+      </div>
+      <div class="panel-note">昵称即账号：<b>不需要密码</b>，同一个昵称在任何设备上都是同一个人。<br>
+        ⚠️ <b>「移除」= 直接删除这个用户</b>：
+        他从<b>所有聊天室</b>的成员表里消失、进行中的连接立刻断开。<br>
+        <b>昵称随即变成没人占用</b> —— 谁（包括他本人）再填这个昵称进来，就是<b>重新登记</b>，<br>
+        <b>他的历史发言会保留</b>（只清人、不清话）。</div>
+      <div id="userAdminList" class="list grid2"></div>
+    </section>
+
+    <!-- ---------- 房间库（全部房间） ---------- -->
+    <section class="apanel" data-panel="rooms">
+      <div class="panel-head">
+        <h3>房间库</h3>
+        <span class="spacer"></span>
+        <button type="button" id="btnRoomsReload" class="mini">刷新</button>
+      </div>
+      <div class="panel-note">这里是<b>全部房间</b>，包括别人在首页建的（普通用户只能看到自己的房间号与自己的回收站）。<br>
+        <b>公开</b>＝不用房间号谁都能进；<b>人人可管理</b>＝默认讨论室（没有房主，也<b>不给删</b>）。<br>
+        ⚠️ 删除房间 = 放进回收站（不是硬删）：房间配置 + 全部历史消息一起进去，
+        之后还能在管理员自己的回收站里还原。删除操作会记成「管理员删的」，
+        所以<b>不会出现在普通用户的回收站里</b>。</div>
+      <div id="roomAdminList" class="list grid2"></div>
+    </section>
+
+    <!-- ---------- 管理口令 ---------- -->
+    <section class="apanel" data-panel="password">
+      <div class="panel-head">
+        <h3>管理口令</h3>
+      </div>
+      <div class="panel-note" id="pwNote"></div>
+      <div class="pwform">
+        <div class="field">
+          <label>当前口令</label>
+          <input id="pwCurrent" type="password" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label>新口令 <span class="tip">（至少 6 位）</span></label>
+          <input id="pwNext" type="password" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label>重复新口令</label>
+          <input id="pwNext2" type="password" autocomplete="new-password">
+        </div>
+      </div>
+      <div id="pwResult" class="probe"></div>
+      <div class="panel-acts">
+        <button type="button" id="btnPwSave" class="primary">修改口令</button>
+      </div>
+    </section>
+
+  </section>
+</main>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- ============ 模型编辑弹窗（从首页搬过来的） ============ -->
+<dialog id="dlgModel">
+  <form method="dialog" class="dlg">
+    <h3 id="dlgModelTitle">新增模型</h3>
+    <div class="field">
+      <label>厂商预设</label>
+      <select id="mProvider"></select>
+    </div>
+    <div class="field">
+      <label>base_url <span class="tip">（选预设会自动填，也可手填任意 OpenAI 兼容端点）</span></label>
+      <input id="mBaseUrl" placeholder="https://...">
+    </div>
+    <div class="field">
+      <label>模型 ID <span class="tip">（点右侧可从厂商拉列表；拉不到就照控制台手填）</span></label>
+      <div class="row">
+        <input id="mModel" placeholder="例如 glm-4.7-flash">
+        <button type="button" id="btnFetchModels" class="mini">拉取列表</button>
+      </div>
+      <div id="mModelOptions" class="chips"></div>
+    </div>
+    <div class="field">
+      <label>显示名</label>
+      <input id="mDisplay" placeholder="例如 智谱 GLM-4.7">
+    </div>
+    <div class="field row2">
+      <span><label>temperature</label><input id="mTemp" type="number" step="0.1" min="0" max="2" value="0.8"></span>
+      <span><label>max_tokens</label><input id="mMaxTokens" type="number" min="64" max="32000" value="1200"></span>
+    </div>
+    <div class="field">
+      <label>思考档位 <span class="tip">（统一写法 low / high / max，各厂商按自己的规则接收；免费线路有抖动，效果是倾向）</span></label>
+      <select id="mThinkLevel">
+        <option value="">不设置（不干预）</option>
+        <option value="low">low · 最省</option>
+        <option value="high">high</option>
+        <option value="max">max · 最强</option>
+      </select>
+      <div id="mThinkNotice" class="tip"></div>
+    </div>
+    <label class="check"><input id="mEnabled" type="checkbox" checked> 启用</label>
+    <div id="mProbeResult" class="probe"></div>
+    <div class="dlg-foot">
+      <button type="button" id="btnProbe" class="mini">探活</button>
+      <span class="spacer"></span>
+      <button type="button" id="btnModelCancel" class="ghost">取消</button>
+      <button type="button" id="btnModelSave" class="primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ 角色编辑弹窗 ============ -->
+<dialog id="dlgRoleEdit">
+  <form method="dialog" class="dlg">
+    <h3 id="dlgRoleTitle">新增角色</h3>
+    <div class="field">
+      <label>名称 <span class="tip">（房主在下拉框里看到的就是它）</span></label>
+      <input id="rName" placeholder="例如 质疑者">
+    </div>
+    <div class="field">
+      <label>分组 <span class="tip">（下拉框里按它分组，可留空）</span></label>
+      <input id="rGroup" placeholder="例如 对抗型">
+    </div>
+    <div class="field">
+      <label>提示词 <span class="tip">（选中该角色后，会作为「你在这场讨论里的角色：…」注入 system）</span></label>
+      <textarea id="rPrompt" rows="4" style="width:100%;font:inherit;line-height:1.6"></textarea>
+    </div>
+    <div class="dlg-note" id="roleUsageNote"></div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnRoleCancel" class="ghost">取消</button>
+      <button type="button" id="btnRoleSave" class="primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>

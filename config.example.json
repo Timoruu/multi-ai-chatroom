@@ -1,0 +1,280 @@
+{
+  "_README": [
+    "多模型聊天室的配置模板（纯模型版，含多房间与主持人控制）。实施时复制为 config.json 再填 Key。",
+    "结构分三层：providers（厂商预设，选厂商自动填 base_url）→ models（全局模型库，页面上增删改的就是这里）→ rooms（房间，引用模型库的 id；角色只设在房间参与者的 role_override 上）。",
+    "⚠️ 下面每家的 base_url 和 model 都是【按惯例填的起点值】，我（助手）没有逐家向官方文档核对，逐条标了 verified:false。",
+    "实施第一步必须是【探活】：给一家发一条最短的 ping，通不过就照官方文档改 model/base_url，不要先怀疑代码。",
+    "API Key 一律走环境变量（api_key_env），不要把明文 Key 写进这个文件、更不要提交进 git。",
+    "拉取模型列表：默认打 GET {base_url}/models；不在这个路径的厂商用 models_url（整条 URL，如 GitHub Models 的 /catalog/models）或 models_path 覆盖，需要特殊请求头用 models_headers。supports_model_list=false 表示「已核实该厂商没有列表接口」，界面会直接让用户手填。2026-10-13 逐家实测：智谱 / 火山方舟 / 百炼 / TokenHub 都有 GET /models。",
+    "思考档位（2026-10-13 新增）：models[].thinking_level 取值 \"\"（不干预，默认）/ low / high / max，页面上只给这三个档 + 「不设置」。**它只是统一命名，真正发给厂商的参数名由 app/providers.py 的 REASONING_DIALECT 按厂商翻译**（逐家实测，不可照抄）：智谱 glm-5.3-flash 的 low 与 high 实际都等于「关闭思考」、只有 max 才思考，且不认 thinking 字段与 medium；火山方舟/百炼/TokenHub 的 low 是真降档。要「彻底关闭」请另用 thinking.type=disabled（豆包、TokenHub 有效）或 enable_thinking=false（千问）；手写 extra_body 的优先级高于档位。各行实测数据见项目 MEMORY.md。",
+    "房间准入（2026-10-14 新增）：rooms[].open=true 的房间是**公开房间** —— 不发房间号（code 留空），任何人打开页面点一下就进来（默认讨论室就是这种，用户要求「默认讨论室不应该设置密码，谁都可以使用」）。open=false 的房间必须凭 6 位房间号加入。房主可在「房间设置」里把房间公开/私有来回切：切公开会清空房间号，切回私有会自动补一个新的 6 位号。",
+    "管理口令（2026-10-14 新增）：admin 段存 /admin 页面的管理口令（PBKDF2-SHA256 哈希＋随机盐，不是明文）。默认口令由用户指定，可在 /admin 页面里改。⚠️ 权限边界：从 / 进来的都是普通用户 —— 看不到也改不了模型库 / 厂商 Key；模型库、厂商 Key、规则（shared_prompt）、角色库（role_presets）都只能由 /admin 登录后修改。房间的创建与管理（含往房间加模型）仍归房主。admin 段不存在时，服务启动会自动补上默认口令。",
+    "昵称即账号（2026-10-14 新增）：普通用户进首页要填昵称，**昵称全局唯一、永久占用** —— 昵称就是登录账号。注册表另存 data/users.json（不在本文件里），令牌由浏览器本地保存；忘了令牌只能请管理员在 /admin 里「释放」该昵称。"
+  ],
+  "providers": {
+    "zhipu": {
+      "name": "智谱 AI",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "base_url_verified": false,
+      "api_key_env": "ZHIPU_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": true,
+      "model_list_note": "2026-10-13 实测 GET /models 返回 11 条。⚠️ 列表不含 -flash 老版本（glm-4-flash 可调用但不在列表里），拉取只是辅助，最终以控制台为准。",
+      "free_quota": "GLM-4.7-Flash / GLM-4-Flash 永久免费，约 30 QPS",
+      "signup": "open.bigmodel.cn"
+    },
+    "ark": {
+      "name": "火山引擎方舟（豆包）",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "base_url_verified": false,
+      "api_key_env": "ARK_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": true,
+      "model_list_note": "2026-10-13 实测 GET /models 返回 135 条，其中 100 条状态是 Shutdown/Retiring（拉取时自动过滤），剩 35 条可用。",
+      "free_quota": "按天自动刷新的免费额度（官方活动页称单模型每日最高 500 万 tokens；第三方汇总称每天 200 万，以控制台为准）",
+      "gotcha": "⚠️ 必须先到控制台手动开通具体模型，否则 Key 正确也会报错，且报错信息很晦涩"
+    },
+    "dashscope": {
+      "name": "阿里云百炼（千问）",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "base_url_verified": true,
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": true,
+      "model_list_note": "2026-10-13 实测 GET /models 返回 175 条（含图像/视频/嵌入模型，聊天取文本模型）。",
+      "free_quota": "首次开通每个模型送 100 万 token，覆盖 70+ 模型，有效期 90 天，无需实名认证",
+      "gotcha": "仅华北2（北京）地域有免费额度；不同模型额度独立、不互通"
+    },
+    "hunyuan": {
+      "name": "腾讯云 TokenHub（混元）",
+      "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+      "base_url_verified": false,
+      "api_key_env": "HUNYUAN_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": true,
+      "model_list_note": "2026-10-13 实测 GET /models 返回 117 条。",
+      "free_quota": "首次开通混元生文送 100 万 tokens 共享资源包，有效期 1 年；混元 Lite 长期免费",
+      "gotcha": "⚠️ 混元有两种鉴权：SecretId/SecretKey 签名 或 token 化的 API Key。只有后者能直走 OpenAI 兼容接口，先用后者试。⚠️ 2026-10-12 实测：TokenHub 控制台发的 Key 只在 tokenhub.tencentmaas.com 有效，打旧域名 api.hunyuan.cloud.tencent.com 必 401 —— 正式用请把 base_url 换成 https://tokenhub.tencentmaas.com/v1"
+    },
+    "deepseek": {
+      "name": "DeepSeek 官方",
+      "base_url": "https://api.deepseek.com/v1",
+      "base_url_verified": false,
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": false,
+      "model_list_note": "接口存在（未配 Key 时返回 401 Authentication Fails），返回内容尚未核实。",
+      "free_quota": "❌ 无免费层。但极便宜（V4.1 Flash 非高峰输入 $0.15 / 输出 $0.60 每百万 token，非高峰覆盖约 79% 时间）",
+      "gotcha": "⚠️ 模型 ID 已变更：deepseek-v4-flash / deepseek-chat / deepseek-reasoner 均已退役，现用 deepseek-flash"
+    },
+    "github_models": {
+      "name": "GitHub Models",
+      "base_url": "https://models.github.ai/inference",
+      "base_url_verified": false,
+      "api_key_env": "GITHUB_TOKEN",
+      "supports_model_list": true,
+      "model_list_verified": false,
+      "models_url": "https://models.github.ai/catalog/models",
+      "models_headers": {
+        "Accept": "application/vnd.github+json"
+      },
+      "model_list_note": "目录接口是 GET /catalog/models（不在推理 base /inference 下，返回裸数组，需要带 models:read 权限的 token）。本机网络对该域名的请求被改写成纯文本，未能实测。",
+      "free_quota": "约 150 次/天 / 15 RPM",
+      "gotcha": "需要能访问 GitHub，启用需相应网络环境"
+    },
+    "custom": {
+      "name": "自定义 OpenAI 兼容端点",
+      "base_url": "",
+      "api_key_env": "CUSTOM_API_KEY",
+      "supports_model_list": true,
+      "model_list_verified": false,
+      "model_list_note": "取决于你自己填的地址有没有实现 GET /models；拉不到就直接手填模型 ID。",
+      "note": "页面「新增模型」时选这个，手填 base_url 与 model"
+    }
+  },
+  "models": [
+    {
+      "id": "zhipu-glm",
+      "provider": "zhipu",
+      "display_name": "智谱 GLM",
+      "model": "glm-4.7-flash",
+      "model_verified": false,
+      "model_note": "可能是 glm-4.7-flash / glm-4-flash，以控制台显示的模型码为准",
+      "temperature": 0.8,
+      "max_tokens": 800,
+      "enabled": true,
+      "thinking_level": ""
+    },
+    {
+      "id": "doubao-seed",
+      "provider": "ark",
+      "display_name": "豆包 Seed",
+      "model": "doubao-seed-2.1-pro",
+      "model_verified": false,
+      "model_note": "火山方舟有两种填法：直接填模型名，或填控制台创建的【接入点 ID】（ep- 开头）。报 model not found 时先去控制台确认接入点",
+      "temperature": 0.9,
+      "max_tokens": 800,
+      "enabled": true,
+      "thinking_level": ""
+    },
+    {
+      "id": "qwen-flash",
+      "provider": "dashscope",
+      "display_name": "千问 Qwen",
+      "model": "qwen3.8-flash",
+      "model_verified": false,
+      "model_note": "可选 qwen3.8-flash / qwen3.7-flash；免费额度按模型独立计算",
+      "temperature": 0.8,
+      "max_tokens": 800,
+      "enabled": true,
+      "thinking_level": ""
+    },
+    {
+      "id": "hunyuan-turbos",
+      "provider": "hunyuan",
+      "display_name": "混元 Hunyuan",
+      "model": "hunyuan-turbos-latest",
+      "model_verified": false,
+      "temperature": 0.9,
+      "max_tokens": 800,
+      "enabled": true,
+      "thinking_level": ""
+    },
+    {
+      "id": "gpt-github",
+      "provider": "github_models",
+      "display_name": "GPT（GitHub Models）",
+      "model": "openai/gpt-4.1",
+      "model_verified": false,
+      "model_note": "免费额度小，建议只在关键轮次启用",
+      "temperature": 0.8,
+      "max_tokens": 800,
+      "enabled": false,
+      "thinking_level": ""
+    }
+  ],
+  "shared_prompt": "你在参加一场多模型讨论，用户是主持人。规则：1) 同意某人时必须补充新理由，不要复述对方的话；2) 引用他人观点时写出对方的名字；3) 禁止空洞的客套话、总结陈词和排比句；4) 你的输出是讨论发言，不是给用户的最终答复；5) 用户点名你时，直接针对被点名的内容作答；6) 不允许编造事实、数据、引用或来源，不确定就明确说不确定；7) 自己的发言不能前后矛盾，改了主意要说明为什么；8) 不要为了附和别人而改变判断，也不要为了反对而反对；9) 不要重复自己或别人已经说过的话，没有新信息就不必再说；10) 一次发言集中推进一个观点，把理由说完整；11) 分歧发生时直接点明分歧在哪，不要用「见仁见智」「各有各的道理」这类说法盖过去。",
+  "role_presets": {
+    "_note": "角色预置库。只有房间参与者的 role_override 填这里的 id（不是自由文本）；模型库不设角色。",
+    "items": [
+      {
+        "id": "skeptic",
+        "name": "质疑者",
+        "group": "对抗型",
+        "prompt": "质疑者。专门找前面发言里最经不起推敲的一处，说明它为什么站不住。"
+      },
+      {
+        "id": "rebutter",
+        "name": "反驳者",
+        "group": "对抗型",
+        "prompt": "反驳者。直接给出与主流意见相反的立场，并给出你的理由。"
+      },
+      {
+        "id": "counter-question",
+        "name": "反问者",
+        "group": "对抗型",
+        "prompt": "反问者。用反问把对方的逻辑推到极端，看结论是否还成立。"
+      },
+      {
+        "id": "supporter",
+        "name": "拥护者",
+        "group": "对抗型",
+        "prompt": "拥护者。倾向支持当前主流意见，并补充支持它的理由。"
+      },
+      {
+        "id": "questioner",
+        "name": "提问者",
+        "group": "探询型",
+        "prompt": "提问者。先问清对方观点里含糊的前提、定义或数据来源，再谈自己的看法。"
+      },
+      {
+        "id": "adder",
+        "name": "补充者",
+        "group": "探询型",
+        "prompt": "补充者。不反驳他人，只在对方观点上补新的理由、证据或适用场景。"
+      },
+      {
+        "id": "data",
+        "name": "数据派",
+        "group": "探询型",
+        "prompt": "数据派。结论必须带事实、数字或案例；拿不出依据就直说拿不出。"
+      },
+      {
+        "id": "pragmatic",
+        "name": "落地派",
+        "group": "落地型",
+        "prompt": "落地派。只看实现成本、可行性和维护负担，少谈愿景。"
+      },
+      {
+        "id": "user-voice",
+        "name": "用户代言人",
+        "group": "落地型",
+        "prompt": "用户代言人。站在真实使用者的角度，问这东西到底解决了谁的什么问题。"
+      },
+      {
+        "id": "risk",
+        "name": "风险派",
+        "group": "落地型",
+        "prompt": "风险派。专看最坏情况、边界条件和合规风险。"
+      },
+      {
+        "id": "synthesizer",
+        "name": "梳理者",
+        "group": "落地型",
+        "prompt": "梳理者。不站边，只梳理各方观点的一致点与分歧点。"
+      },
+      {
+        "id": "direct",
+        "name": "直给派",
+        "group": "表达风格",
+        "prompt": "直给派。直接给结论，不爱绕弯，主动指出方案里最脆弱的一环。"
+      },
+      {
+        "id": "engineer",
+        "name": "工程派",
+        "group": "表达风格",
+        "prompt": "工程派。偏实现细节，喜欢给具体方案和数字。"
+      }
+    ]
+  },
+  "host_control": {
+    "mode": "user",
+    "mode_options": [
+      "user",
+      "ai_chair"
+    ],
+    "note": "主持人默认是用户（mode=user）。ai_chair 由某个模型充当调度者，默认关闭。",
+    "ai_chair_model_ref": null,
+    "capabilities": {
+      "point_speaker": true,
+      "assign_summarizer": true,
+      "free_discussion": true,
+      "interrupt_anytime": true,
+      "reply_to_specific_message": true
+    },
+    "precedence": "用户手动指令 > 自动调度。用户指令必须立即生效，当前模型的流式输出可被打断丢弃。"
+  },
+  "_rooms_note": "房间不在这里。2026-10-15 起，房间定义（房间本身 / 房间号 / 房主钥匙 / 模型参与者 / 真人成员表）的事实来源是 data/room_index.json —— 因为 config.json 在公网发布时会被本地那份整体覆盖，而 data/ 不上传，房间放 data/ 里才能活过每一次重发布。本文件里**刻意不写 rooms**：老项目（还在 config.json 里存房间）首次启动时会被自动迁移一次，全新安装则由服务自动补出默认讨论室。要改房间请用页面上的「房间设置」。",
+  "output": {
+    "stream": true,
+    "show_model_name": true,
+    "show_round": true,
+    "export_markdown": true,
+    "final_summary_sections": [
+      "共识",
+      "未谈拢的分歧",
+      "结论"
+    ]
+  },
+  "cost_guard": {
+    "scope": "global",
+    "note": "多房间并行会共用同一批免费额度，所以护栏必须按全局计数，不能按房间",
+    "max_total_calls": 30,
+    "multiplication_warning": "4 个模型 × 5 轮 = 20 次调用。定向回应与点名发言会额外增加调用次数（连同完整历史重发）"
+  },
+  "storage": {
+    "config_file": "config.json",
+    "rooms_dir": "data/rooms/",
+    "note": "配置读写必须走同一个模块：页面增删改 → 写 JSON → 内存热重载 → 通知前端刷新。不要让页面直接改内存对象。"
+  }
+}

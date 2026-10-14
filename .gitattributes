@@ -1,0 +1,10 @@
+# 换行符策略
+#
+# 本机 git 的 system 配置里是 core.autocrlf=true，这里把唯一真正要紧的一类文件写死：
+# Windows 批处理 **必须 CRLF** —— 裸 LF 会让 cmd.exe 解析出错（见技能 `windows-bat-delivery`）。
+# `text eol=crlf` = 仓库里存 LF、每次签出都还原成 CRLF，换任何机器都不会变成裸 LF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.reg text eol=crlf
