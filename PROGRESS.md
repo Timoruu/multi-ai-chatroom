@@ -21,6 +21,14 @@
 ✅ **已重新发布到公网并线上验收 24/24 全过**（用户当轮选「现在就发布」），
 其中第 7 节**在线上真删了一个房间**、`permanent=True` —— 公网那个 bug 已在线上实证修好。
 
+📦 **版本管理（10-15 第八批建立）**：此前项目**从没有 git 历史**（只有一份 `.gitignore`）；
+现已在本目录 `git init`，首次提交 **`e2cfecf`（分支 `master`）= 51 个文件**。
+只在本机、**没有 remote**。仓库身份只配了 `--local`（`zcy1` / `zcy1@localhost`，没动全局）。
+新增 `.gitattributes` 把 `*.bat` 钉成 `text eol=crlf`（本机 system config 是 `core.autocrlf=true`，
+`.bat` 必须 CRLF）。`.gitignore` 另外补挡了 `tools/_pre_rooms_migration_config.json`
+（**含明文 Key 的备份**）、`tools/_online_rooms.json`、`.deploy/`。
+**提交纪律**：平时改代码/跑验证不提交，等用户说「提交 / 存个版本」再动。
+
 下面 1~15 是历次改动（保留备查）：
 
 1. **新增「房间回收站」**（用户 10-13 提出的需求）：删除房间 → 进回收站 → 可还原 / 可彻底删除；
