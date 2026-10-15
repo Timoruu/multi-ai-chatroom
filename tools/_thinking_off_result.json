@@ -1,0 +1,92 @@
+[
+ {
+  "provider": "zhipu",
+  "model": "glm-4.7-flash",
+  "tag": "手动指定",
+  "candidate": "(基线)不干预",
+  "sent": {},
+  "status": 200,
+  "error": "",
+  "finish": "length",
+  "content_len": 0,
+  "reasoning_len": 427,
+  "reasoning_tokens": 255,
+  "seconds": 30.4,
+  "verdict": "✅ 可关",
+  "verdict_why": "enable_thinking=false"
+ },
+ {
+  "provider": "zhipu",
+  "model": "glm-4.7-flash",
+  "tag": "手动指定",
+  "candidate": "thinking.type=disabled",
+  "sent": {
+   "thinking": {
+    "type": "disabled"
+   }
+  },
+  "status": 429,
+  "error": "1305 该模型当前访问量过大，请您稍后再试",
+  "finish": null,
+  "content_len": 0,
+  "reasoning_len": 0,
+  "reasoning_tokens": null,
+  "seconds": 4.0,
+  "verdict": "✅ 可关",
+  "verdict_why": "enable_thinking=false"
+ },
+ {
+  "provider": "zhipu",
+  "model": "glm-4.7-flash",
+  "tag": "手动指定",
+  "candidate": "enable_thinking=false",
+  "sent": {
+   "enable_thinking": false
+  },
+  "status": 200,
+  "error": "",
+  "finish": "stop",
+  "content_len": 45,
+  "reasoning_len": 0,
+  "reasoning_tokens": 0,
+  "seconds": 32.3,
+  "verdict": "✅ 可关",
+  "verdict_why": "enable_thinking=false"
+ },
+ {
+  "provider": "zhipu",
+  "model": "glm-4.7-flash",
+  "tag": "手动指定",
+  "candidate": "reasoning_effort=none",
+  "sent": {
+   "reasoning_effort": "none"
+  },
+  "status": 200,
+  "error": "",
+  "finish": "length",
+  "content_len": 0,
+  "reasoning_len": 434,
+  "reasoning_tokens": 255,
+  "seconds": 20.3,
+  "verdict": "✅ 可关",
+  "verdict_why": "enable_thinking=false"
+ },
+ {
+  "provider": "zhipu",
+  "model": "glm-4.7-flash",
+  "tag": "手动指定",
+  "candidate": "thinking_budget=1",
+  "sent": {
+   "thinking_budget": 1
+  },
+  "status": 200,
+  "error": "",
+  "finish": "length",
+  "content_len": 0,
+  "reasoning_len": 441,
+  "reasoning_tokens": 255,
+  "seconds": 10.1,
+  "verdict": "✅ 可关",
+  "verdict_why": "enable_thinking=false"
+ }
+]

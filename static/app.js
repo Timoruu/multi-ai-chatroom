@@ -394,7 +394,11 @@ async function handle(m) {
     case 'message_error':
       if (m.roomId === S.roomId) {
         endStream();
-        toast('调用失败：' + m.error + '\n（先检查模型 ID 和 base_url，别先怀疑代码）', true);
+        // 2026-10-15 起服务端不再因单个模型失败中断整轮，而是跳过它继续下一位（m.skipped = true）；
+        // 全部失败时服务端会另发一条 error 汇总。
+        toast(m.skipped
+          ? `「${m.name || '该模型'}」调用失败，已跳过、由下一位继续：` + m.error
+          : '调用失败：' + m.error + '\n（先检查模型 ID 和 base_url，别先怀疑代码）', true);
         refreshHistory();
       }
       break;
@@ -1028,25 +1032,26 @@ function renderHostBar() {
     const grp = box.closest ? box.closest('.group') : null;
     if (grp && grp.classList) grp.classList.toggle('on', auto);
   }
-  // 轮内间隔（房间设置，按秒展示；下限 3 秒 / 上限 60 秒）
+  // 轮内间隔（房间设置，按秒展示；下限 0.5 秒 / 上限 60 秒）
   const gEl = $('#gapInput');
   if (gEl && document.activeElement !== gEl) gEl.value = gapSeconds();
 }
 
-/* 轮内间隔：房间 debate.auto_speak_gap_ms → 秒（最少 3 秒） */
+/* 轮内间隔：房间 debate.auto_speak_gap_ms → 秒（下限 0.5 秒，保留 0.1 秒精度） */
 function gapSeconds() {
   const dbg = (S.room && S.room.debate) || {};
   const ms = Number(dbg.auto_speak_gap_ms);
-  return Math.max(3, Math.round((ms > 0 ? ms : 3000) / 1000));
+  return Math.max(0.5, Math.round((ms > 0 ? ms : 3000) / 100) / 10);
 }
 
 /* 改轮内间隔：写回 debate.auto_speak_gap_ms（唯一事实来源是 config.json） */
 async function setGap() {
   if (!S.roomId || !S.room) return;
   const el = $('#gapInput');
-  let sec = parseInt(el.value, 10);
-  if (!sec || sec < 3) sec = 3;      // 用户要求：至少 3 秒
+  let sec = parseFloat(el.value);
+  if (!sec || sec < 0.5) sec = 0.5;      // 下限 0.5 秒（2026-10-15 起放开；原为至少 3 秒）
   if (sec > 60) sec = 60;
+  sec = Math.round(sec * 10) / 10;
   el.value = sec;
   const dbg = S.room.debate || {};
   if (sec === gapSeconds()) return;      // 没变化就不用写盘

@@ -44,6 +44,9 @@ SCRATCH_GLOBS = [
     # 只清 .log / .txt —— _*.json 快照（_online_rooms.json / _pre_rooms_migration_config.json）
     # 与所有 .py 工具**不在范围内**，安全。
     'tools/_*.log', 'tools/_*.txt',
+    # 2026-10-15 第十二批：收尾脚本自己的 stdout 落盘（tools/_tidy.out）以前不在范围内 ——
+    # 每次跑 tidy 都重定向到它、跑完又留着，于是它永远清不掉。补 .out 一类。
+    'tools/_*.out', '_*.out',
 ]
 KEEP = {'_server.log', 'env-check.txt'}
 

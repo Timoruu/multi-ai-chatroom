@@ -1,18 +1,150 @@
+/* ==================================================================
+   多模型聊天室 · 视觉主题「青瓷雅致」（C 方案）  2026-10-15
+   ------------------------------------------------------------------
+   底座：浅青灰 + 青瓷绿（主色）+ 木色（真人 / 房主）。
+   附加项（用户勾选的四项，全部纯 CSS）：
+     ① 模型名彩色圆点          —— .msg-who::before / #participantList .card-top::before
+     ② 自动跟随系统深浅色      —— @media (prefers-color-scheme: dark) 覆盖 :root 变量
+     ③ 正文放大一档            —— body 13→13.5px / 行高 1.6→1.75；.msg-body 同步
+     ④ hover 轻微过渡（0.18s） —— 只过渡颜色类属性，不用 transition:all
+
+   ⚠️ 本文件只负责「外观」：颜色 / 字体 / 圆角 / 过渡 / 圆点。
+      不参与任何布局尺寸（grid 列宽、padding、gap、flex 规则）与功能逻辑。
+   ⚠️ 改本文件会让 /static/style.css?v=<hash> 自动变号（app/main.py _asset_ver
+      按文件内容算哈希），浏览器不必强刷即可拿到新样式。
+   ⚠️ tools/_test_cards.js 断言这里存在若干选择器：.gate / .person /
+      .badge-owner / .rprog / .room-code / .owner-only[hidden] / #btnLeave:disabled /
+      .adminwrap / .navitem / .apanel，以及 .apanel{display:none} 与
+      .apanel.active{display:block}。改名前先看那份测试。
+   ================================================================== */
+
 :root {
-  --bg: #f6f6f4;
-  --panel: #ffffff;
-  --panel-2: #f1efe8;
-  --line: rgba(0, 0, 0, .12);
-  --line-soft: rgba(0, 0, 0, .07);
-  --text: #23231f;
-  --text-2: #5f5e5a;
-  --text-3: #8a8880;
-  --accent: #185fa5;
-  --accent-bg: #e6f1fb;
-  --danger: #a32d2d;
-  --danger-bg: #fcebeb;
-  --ok: #0f6e56;
-  --radius: 10px;
+  color-scheme: light;
+
+  /* —— 底色 / 面板 —— */
+  --bg: #f9fcfb;                 /* 页面底色（body 实为渐变，见 --bg-grad） */
+  --bg-grad: linear-gradient(168deg, #fcfefd 0%, #f5faf8 54%, #edf6f1 100%);
+  --panel: #ffffff;              /* 顶栏 / 左右两栏 */
+  --panel-2: #f1f7f4;            /* 青瓷淡洗：控制条 / 我是谁 / 思考过程 / 索引块 */
+  --panel-3: #fbfdfc;            /* 中间消息列 / admin 内容区 */
+  --card-bg: #ffffff;
+  --btn-bg: #ffffff;
+  --input-bg: #ffffff;
+  --chip-bg: #ffffff;
+  --hover: #f1f7f4;              /* 统一 hover 底色（按钮 / 房间 / 折叠头 / 导航） */
+
+  /* —— 描边 —— */
+  --line: rgba(24, 60, 52, .16);
+  --line-soft: rgba(24, 60, 52, .09);
+  --line-strong: rgba(24, 60, 52, .28);
+
+  /* —— 文字 —— */
+  --text: #1e2a27;
+  --text-2: #566661;
+  --text-3: #8a9995;
+
+  /* —— 主色：青瓷绿 —— */
+  --accent: #2f6f62;
+  --accent-bg: #e6f1ed;
+  --accent-dim: rgba(47, 111, 98, .72);
+  --accent-line: rgba(47, 111, 98, .42);
+  --accent-line-soft: rgba(47, 111, 98, .24);
+  --accent-line-strong: rgba(47, 111, 98, .58);
+  --focus-ring: rgba(47, 111, 98, .16);
+
+  /* —— 语义色 —— */
+  --danger: #a63a2c;
+  --danger-bg: #fbecea;
+  --ok: #2c7a5e;
+  --warn-fg: #8a5a12;            /* 「未核实」/「房主」角标 */
+  --warn-bg: #f8eeda;
+  --wood: #a9762f;               /* 真人 / 房主：木色 */
+  --wood-bg: #f7f0e4;
+  --wood-line: rgba(169, 118, 47, .42);
+
+  /* —— 状态点 —— */
+  --dot-off: #c3cdc9;
+  /* 模型名彩色圆点：5 色轮转（青瓷 / 琥珀 / 黛蓝 / 紫檀 / 松绿） */
+  --dot-1: #2f6f62;
+  --dot-2: #b3802f;
+  --dot-3: #3d6ea8;
+  --dot-4: #8b5f8f;
+  --dot-5: #40868c;
+
+  /* —— 浮层 —— */
+  --toast-bg: #1f2b27;
+  --toast-fg: #f3f9f6;
+  --veil: rgba(22, 42, 37, .5);      /* 填昵称门槛的遮罩 */
+  --backdrop: rgba(22, 42, 37, .3);  /* dialog::backdrop */
+  --shadow: 0 14px 44px rgba(20, 45, 39, .2);
+  --quote-bg: rgba(47, 111, 98, .05);
+  --quote-line: rgba(47, 111, 98, .28);
+  --scroll: rgba(24, 60, 52, .22);
+
+  --radius: 14px;                /* 面板类圆角基准（各控件按自身尺寸取值） */
+}
+
+/* ------------------------------------------------------------------
+   附加项②：自动跟随系统深浅色。
+   只覆盖变量，不重复写规则 —— 其余样式全部通过 var() 自动换色。
+   所以新增样式时**必须用变量**，别再写死 #fff / #f5f5f2 这类颜色。
+   ------------------------------------------------------------------ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #0f1614;
+    --bg-grad: linear-gradient(168deg, #141d1a 0%, #101816 54%, #0b1211 100%);
+    --panel: #161f1c;
+    --panel-2: #1b2824;
+    --panel-3: #131c19;
+    --card-bg: #18221f;
+    --btn-bg: #1c2724;
+    --input-bg: #141d1a;
+    --chip-bg: #1c2724;
+    --hover: #1e2b27;
+
+    --line: rgba(206, 234, 224, .17);
+    --line-soft: rgba(206, 234, 224, .09);
+    --line-strong: rgba(206, 234, 224, .3);
+
+    --text: #e6efec;
+    --text-2: #a9bab4;
+    --text-3: #7c8d88;
+
+    --accent: #6fbfa8;
+    --accent-bg: #1d3330;
+    --accent-dim: rgba(111, 191, 168, .78);
+    --accent-line: rgba(111, 191, 168, .44);
+    --accent-line-soft: rgba(111, 191, 168, .26);
+    --accent-line-strong: rgba(111, 191, 168, .62);
+    --focus-ring: rgba(111, 191, 168, .22);
+
+    --danger: #e08b7a;
+    --danger-bg: #33201c;
+    --ok: #5fc39a;
+    --warn-fg: #e0b878;
+    --warn-bg: #332a18;
+    --wood: #d8a763;
+    --wood-bg: #302617;
+    --wood-line: rgba(216, 167, 99, .42);
+
+    --dot-off: #4a5754;
+    --dot-1: #6fbfa8;
+    --dot-2: #d6a865;
+    --dot-3: #7ba7dd;
+    --dot-4: #c092c4;
+    --dot-5: #6fbabd;
+
+    --toast-bg: #273531;
+    --toast-fg: #eef6f3;
+    --veil: rgba(0, 0, 0, .62);
+    --backdrop: rgba(0, 0, 0, .55);
+    --shadow: 0 14px 44px rgba(0, 0, 0, .55);
+    --quote-bg: rgba(111, 191, 168, .08);
+    --quote-line: rgba(111, 191, 168, .3);
+    --scroll: rgba(206, 234, 224, .22);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -23,31 +155,50 @@ html, body {
 }
 
 body {
-  font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 附加项③：正文由 13px/1.6 放大一档到 13.5px/1.75 */
+  font: 13.5px/1.75 -apple-system, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+        "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);
+  background-image: var(--bg-grad);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
+
+::selection { background: var(--accent-bg); color: var(--text); }
+
+/* 细滚动条：别让系统滚动条把青瓷底色切断 */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; }
 
 button {
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
   border: .5px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 9px;
+  background: var(--btn-bg);
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
 }
-button:hover { background: #f3f3f0; border-color: rgba(0, 0, 0, .22); }
+button:hover { background: var(--hover); border-color: var(--line-strong); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: #134e88; }
-button.danger { color: var(--danger); border-color: rgba(163, 45, 45, .35); }
+button.primary:hover { background: var(--accent); filter: brightness(1.1); }
+button.danger { color: var(--danger); border-color: rgba(166, 58, 44, .35); }
 button.danger:hover { background: var(--danger-bg); }
 button.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
+button.ghost:hover { background: var(--hover); border-color: transparent; }
 button.mini { font-size: 11px; padding: 3px 8px; border-radius: 7px; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
@@ -56,14 +207,17 @@ input, select, textarea {
   font-size: 12px;
   padding: 5px 8px;
   border: .5px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 9px;
+  background: var(--input-bg);
   color: var(--text);
   outline: none;
   min-width: 0;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent); }
-textarea { resize: none; line-height: 1.55; }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+textarea { resize: none; line-height: 1.6; }
 
 .spacer { flex: 1; }
 
@@ -76,10 +230,28 @@ textarea { resize: none; line-height: 1.55; }
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: .5px solid var(--line);
+  box-shadow: 0 1px 0 var(--line-soft);
   flex: none;
 }
-.brand { font-size: 14px; font-weight: 600; }
-.room-title { font-size: 13px; color: var(--text-2); }
+.brand {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 品牌小方标：青瓷绿方块 + 一圈淡色光环 */
+.brand::before {
+  content: '';
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.room-title { font-size: 13px; font-weight: 500; color: var(--text-2); }
 .status {
   font-size: 11px;
   padding: 3px 9px;
@@ -87,9 +259,9 @@ textarea { resize: none; line-height: 1.55; }
   border: .5px solid var(--line);
   color: var(--text-2);
 }
-.status.running { background: var(--accent-bg); border-color: rgba(24, 95, 165, .4); color: var(--accent); }
-.status.idle { background: #f1efe8; }
-.status.down { background: var(--danger-bg); border-color: rgba(163, 45, 45, .4); color: var(--danger); }
+.status.running { background: var(--accent-bg); border-color: var(--accent-line); color: var(--accent); }
+.status.idle { background: var(--panel-2); }
+.status.down { background: var(--danger-bg); border-color: rgba(166, 58, 44, .4); color: var(--danger); }
 .counter { font-size: 11px; color: var(--text-3); }
 
 /* ---------------- layout ---------------- */
@@ -102,7 +274,7 @@ textarea { resize: none; line-height: 1.55; }
 }
 .col { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); }
 .col-rooms { border-right: .5px solid var(--line); }
-.col-center { border-right: .5px solid var(--line); background: #fbfbfa; }
+.col-center { border-right: .5px solid var(--line); background: var(--panel-3); }
 .col-right { overflow-y: auto; }
 
 .col-head {
@@ -113,7 +285,7 @@ textarea { resize: none; line-height: 1.55; }
   font-size: 11px;
   font-weight: 600;
   color: var(--text-2);
-  letter-spacing: .02em;
+  letter-spacing: .03em;
   flex: none;
 }
 .col-head > span:first-child { flex: 1; }
@@ -138,7 +310,7 @@ textarea { resize: none; line-height: 1.55; }
   position: relative; z-index: 2;
   background: var(--panel);
 }
-.rblock-head:hover { background: #f2f1ee; }
+.rblock-head:hover { background: var(--hover); }
 .rblock-arrow {
   width: 0; height: 0; flex: none;
   border-left: 4.5px solid var(--text-3);
@@ -149,7 +321,7 @@ textarea { resize: none; line-height: 1.55; }
 .rblock-body { display: flex; flex-direction: column; }
 .rblock.collapsed .rblock-body { display: none; }
 
-.hint { padding: 4px 12px 12px; font-size: 11px; color: var(--text-3); line-height: 1.7; }
+.hint { padding: 4px 12px 12px; font-size: 11px; color: var(--text-3); line-height: 1.75; }
 
 /* ---------------- 左栏：规则 / 角色说明模块（只读展示注入给模型的提示词） ---------------- */
 /* 左栏内容（房间列表 + 说明模块）可能超出可视高，整列滚动，区块本体不参与压缩 */
@@ -157,15 +329,15 @@ textarea { resize: none; line-height: 1.55; }
 .col-rooms .rblock { flex: none; }
 .col-rooms .rblock-head { border-top: 1px solid var(--line-soft); }
 .info-body { display: flex; flex-direction: column; gap: 5px; padding: 0 10px 10px; }
-.info-note { padding: 0 12px 8px; font-size: 10px; color: var(--text-3); line-height: 1.7; }
-.info-preamble { font-size: 11px; color: var(--text-3); line-height: 1.7; }
+.info-note { padding: 0 12px 8px; font-size: 10px; color: var(--text-3); line-height: 1.75; }
+.info-preamble { font-size: 11px; color: var(--text-3); line-height: 1.75; }
 .info-group { font-size: 10px; font-weight: 600; color: var(--text-3); letter-spacing: .04em; padding-top: 3px; }
-.info-item { display: flex; gap: 6px; font-size: 11px; line-height: 1.65; color: var(--text-2); }
+.info-item { display: flex; gap: 6px; font-size: 11px; line-height: 1.7; color: var(--text-2); }
 .info-idx {
-  flex: none; width: 14px; height: 14px; margin-top: 2px; border-radius: 4px;
-  background: #f1efe8; color: var(--text-3); font-size: 9px; text-align: center; line-height: 14px;
+  flex: none; width: 14px; height: 14px; margin-top: 2px; border-radius: 5px;
+  background: var(--panel-2); color: var(--text-3); font-size: 9px; text-align: center; line-height: 14px;
 }
-.info-role { font-size: 11px; line-height: 1.65; color: var(--text-2); }
+.info-role { font-size: 11px; line-height: 1.7; color: var(--text-2); }
 .info-text { min-width: 0; word-break: break-word; }
 .info-empty { font-size: 11px; color: var(--text-3); padding: 0 0 2px; }
 
@@ -174,12 +346,12 @@ textarea { resize: none; line-height: 1.55; }
 .room {
   position: relative;
   padding: 6px 8px;
-  border-radius: 8px;
+  border-radius: 9px;
   cursor: pointer;
   border: .5px solid transparent;
 }
-.room:hover { background: #f5f5f2; }
-.room.active { background: var(--accent-bg); border-color: rgba(24, 95, 165, .25); }
+.room:hover { background: var(--hover); }
+.room.active { background: var(--accent-bg); border-color: var(--accent-line-soft); }
 .room-name { font-size: 12px; }
 .room.active .room-name { color: var(--accent); font-weight: 600; }
 .room-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; }
@@ -199,12 +371,12 @@ textarea { resize: none; line-height: 1.55; }
   color: var(--danger);
   display: inline-block;
 }
-.dlg-note { font-size: 11px; color: var(--text-2); line-height: 1.75; }
+.dlg-note { font-size: 11px; color: var(--text-2); line-height: 1.8; }
 .dlg-note b { color: var(--text); }
 .trash-item {
   padding: 8px 10px;
   border: .5px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--panel-2, #fafaf8);
   display: flex;
   align-items: center;
@@ -253,11 +425,54 @@ textarea { resize: none; line-height: 1.55; }
   flex-direction: column;
   gap: 16px;
 }
-.empty { color: var(--text-3); font-size: 12px; padding: 24px 0; max-width: 460px; line-height: 1.8; }
+.empty { color: var(--text-3); font-size: 12px; padding: 24px 0; max-width: 460px; line-height: 1.9; }
 
 .msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
 .msg-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.msg-who { font-size: 12px; font-weight: 600; }
+
+/* ---------------- 附加项①：模型名彩色圆点（纯 CSS，不改 app.js） ----------------
+   圆点挂在已有的 .msg-who / #participantList .card-top 上由 ::before 生成，不改 DOM。
+   颜色按「第 n 条发言 / 第 n 张卡片」5 色轮转（青瓷→琥珀→黛蓝→紫檀→松绿）。
+   注意：这是「按顺序轮转」的视觉多样性，不是「按模型身份固定配色」——
+   CSS 拿不到模型 id，为这个去改 JS 不值得（用户也要求不动功能代码）。
+   真人（主持人）发言用木色圆点，与模型区分开。 */
+.msg-who {
+  font-size: 12.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg-who::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.msg.host .msg-who::before { background: var(--wood); }
+#messages > .msg.model:nth-child(5n+1) .msg-who::before { background: var(--dot-1); }
+#messages > .msg.model:nth-child(5n+2) .msg-who::before { background: var(--dot-2); }
+#messages > .msg.model:nth-child(5n+3) .msg-who::before { background: var(--dot-3); }
+#messages > .msg.model:nth-child(5n+4) .msg-who::before { background: var(--dot-4); }
+#messages > .msg.model:nth-child(5n)   .msg-who::before { background: var(--dot-5); }
+
+/* 右栏「本房间参与者」列表：模型名前的同款圆点（排在「启用/停用」状态点之前） */
+#participantList > .card .card-top::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dot-1);
+}
+#participantList > .card:nth-child(5n+1) .card-top::before { background: var(--dot-1); }
+#participantList > .card:nth-child(5n+2) .card-top::before { background: var(--dot-2); }
+#participantList > .card:nth-child(5n+3) .card-top::before { background: var(--dot-3); }
+#participantList > .card:nth-child(5n+4) .card-top::before { background: var(--dot-4); }
+#participantList > .card:nth-child(5n)   .card-top::before { background: var(--dot-5); }
+
 .msg-meta { font-size: 11px; color: var(--text-3); }
 .chip {
   font-size: 10px;
@@ -265,21 +480,21 @@ textarea { resize: none; line-height: 1.55; }
   border-radius: 999px;
   border: .5px solid var(--line);
   color: var(--text-2);
-  background: #fff;
+  background: var(--chip-bg);
 }
 /* 发言类型的四条配色规则已随标签机制一并删除（2026-10-13）。
    剩下的 .chip 基类仍被「新增模型 → 拉取列表」的候选模型按钮复用。 */
-.msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.msg-body { font-size: 13.5px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
 .msg.host .msg-body { color: var(--text); }
-.msg.host { border-left: 2px solid var(--line); padding-left: 10px; }
+.msg.host { border-left: 2px solid var(--wood-line); padding-left: 10px; }
 .msg.error .msg-body { color: var(--danger); }
 .msg-acts { display: flex; gap: 6px; opacity: 0; }
 .msg:hover .msg-acts { opacity: 1; }
 .reason {
   font-size: 11px;
   color: var(--text-3);
-  background: #f1efe8;
-  border-radius: 8px;
+  background: var(--panel-2);
+  border-radius: 9px;
   padding: 6px 9px;
   white-space: pre-wrap;
   max-height: 96px;
@@ -296,11 +511,11 @@ textarea { resize: none; line-height: 1.55; }
 }
 @keyframes blink { 50% { opacity: 0; } }
 .quote {
-  border-left: 2px solid rgba(24, 95, 165, .3);
+  border-left: 2px solid var(--quote-line);
   padding: 3px 0 3px 8px;
   font-size: 11px;
   color: var(--text-2);
-  background: rgba(24, 95, 165, .04);
+  background: var(--quote-bg);
 }
 
 /* ---------------- right column cards ---------------- */
@@ -308,8 +523,8 @@ textarea { resize: none; line-height: 1.55; }
 .card {
   padding: 7px 8px;
   border: 1px solid var(--line-soft);
-  border-radius: 9px;
-  background: #fff;
+  border-radius: 10px;
+  background: var(--card-bg);
   position: relative; z-index: 1;
 }
 .card.off { opacity: .5; }
@@ -329,12 +544,12 @@ textarea { resize: none; line-height: 1.55; }
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  line-height: 1.45;
-  min-height: 2.9em;
+  line-height: 1.5;
+  min-height: 3em;
 }
 .card-acts { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
-.dot { width: 7px; height: 7px; border-radius: 999px; background: #c9c7c0; flex: none; }
-.dot.on { background: #1d9e75; }
+.dot { width: 7px; height: 7px; border-radius: 999px; background: var(--dot-off); flex: none; }
+.dot.on { background: var(--ok); }
 /* 「未核实」角标放在标题行：副标题怎么截断它都在，不会像以前那样被挤掉 */
 .tag-warn {
   flex: none;
@@ -342,23 +557,41 @@ textarea { resize: none; line-height: 1.55; }
   line-height: 15px;
   padding: 0 6px;
   border-radius: 999px;
-  color: #854f0b;
-  background: #faeeda;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
   white-space: nowrap;
 }
+/* 「可关思考」角标（2026-10-15）：和「未核实」并列在标题行，用青瓷绿区分开 */
+.tag-ok {
+  flex: none;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--ok);
+  background: var(--accent-bg);
+  white-space: nowrap;
+}
+/* 「这一个关不掉」的提示条：⚠️ 要写 .field .tip.tip-warn 才压得住 .field .tip 的颜色
+   （后者是两个类选择器，只写 .tip-warn 会因为优先级不够而不生效） */
+.field .tip.tip-warn { color: var(--warn-fg); }
 
 /* ---------------- dialog ---------------- */
 
 dialog {
   border: .5px solid var(--line);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 0;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
+  box-shadow: var(--shadow);
   max-width: 520px;
   width: calc(100% - 40px);
 }
-dialog::backdrop { background: rgba(0, 0, 0, .28); }
+dialog::backdrop { background: var(--backdrop); }
+/* 模型编辑弹窗字段最多（6 个参数 + 说明），520px 装不下 → 单独加宽（2026-10-15 第十三批，
+   用户：「内容展示不下的话，窗口可以宽一点」）。其他弹窗维持原宽不动。 */
+#dlgModel { max-width: 640px; }
 .dlg { padding: 16px 18px; display: flex; flex-direction: column; gap: 11px; }
 .dlg h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .field { display: flex; flex-direction: column; gap: 4px; }
@@ -367,6 +600,57 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .field.row2 { flex-direction: row; gap: 12px; }
 .field.row2 > span { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .field.row2 label { font-size: 11px; color: var(--text-2); }
+
+/* 参数说明气泡（2026-10-15 第十三批）：鼠标悬停 / 键盘聚焦到「?」时弹出说明。
+   纯 CSS（content: attr(data-tip)），不加 JS；颜色全走变量，深浅色模式都正常。
+   ⚠️ 隐藏必须用 display:none（第十三批修正）：原来用 visibility:hidden + opacity:0，
+   **隐藏的元素照样占布局**，6 个 272px 宽的气泡有几个伸出 <dialog> 右缘，
+   而 <dialog> 默认 overflow:auto → 弹窗底部凭空多出一条横向滚动条（用户截图报的）。
+   display:none 完全不参与布局，滚动条消失；淡入改用 animation（display 不能过渡）。
+   默认气泡向右展开；右半栏的参数加 .help-l 让它向左展开，避免盖出弹窗右缘。 */
+.help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+}
+.help::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: -6px;
+  bottom: calc(100% + 8px);
+  width: 272px;
+  max-width: min(272px, calc(100vw - 80px));
+  padding: 9px 11px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.75;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 6px 18px var(--line);
+  display: none;
+  z-index: 60;
+  pointer-events: none;
+}
+.help-l::after { left: auto; right: -6px; }
+.help:hover::after,
+.help:focus-visible::after { display: block; animation: help-in .15s ease-out; }
+@keyframes help-in { from { opacity: 0; } to { opacity: 1; } }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > input { flex: 1; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 12px; }
@@ -390,15 +674,16 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
   z-index: 50;
 }
 .toast {
-  background: #26261f;
-  color: #fff;
+  background: var(--toast-bg);
+  color: var(--toast-fg);
   font-size: 12px;
   padding: 8px 12px;
-  border-radius: 9px;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
   max-width: 380px;
-  line-height: 1.6;
+  line-height: 1.7;
 }
-.toast.bad { background: var(--danger); }
+.toast.bad { background: var(--danger); color: #fff; }
 
 /* ---------------- 多人讨论（2026-10-13） ---------------- */
 
@@ -406,7 +691,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .gate {
   position: fixed;
   inset: 0;
-  background: rgba(35, 35, 31, .55);
+  background: var(--veil);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -415,13 +701,13 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .gate[hidden] { display: none; }
 .gate-card {
   background: var(--panel);
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 22px 24px;
   width: min(380px, 90vw);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
+  box-shadow: var(--shadow);
 }
 .gate-card h3 { margin: 0 0 8px; font-size: 15px; font-weight: 500; }
-.gate-note { margin: 0 0 14px; font-size: 12px; color: var(--text-2); line-height: 1.7; }
+.gate-note { margin: 0 0 14px; font-size: 12px; color: var(--text-2); line-height: 1.75; }
 
 /* 顶栏：我是谁 / 房间号 */
 .me {
@@ -439,7 +725,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
   font-family: ui-monospace, Consolas, monospace;
   background: var(--accent-bg);
   color: var(--accent);
-  border-radius: 6px;
+  border-radius: 7px;
   padding: 2px 8px;
   letter-spacing: .06em;
 }
@@ -463,16 +749,16 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
   gap: 8px;
   padding: 6px 9px;
   border: .5px solid var(--line-soft);
-  border-radius: 9px;
-  background: var(--panel);
+  border-radius: 10px;
+  background: var(--card-bg);
   margin-bottom: 5px;
 }
-.person.me { border-color: rgba(24, 95, 165, .45); background: var(--accent-bg); }
+.person.me { border-color: var(--accent-line); background: var(--accent-bg); }
 .person .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person.off .pname { color: var(--text-3); }
 .person .pdot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: rgba(0, 0, 0, .18); flex: 0 0 auto;
+  background: var(--dot-off); flex: 0 0 auto;
 }
 .person .pdot.on { background: var(--ok); }
 .person .tick {
@@ -481,9 +767,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .person .tick.done { color: var(--ok); font-weight: 500; }
 .badge-owner {
   font-size: 10px;
-  background: #faeeda;
-  color: #854f0b;
-  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-radius: 5px;
   padding: 1px 5px;
   flex: 0 0 auto;
 }
@@ -507,7 +793,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 
 /* 真人发言：自己的那条左边线用主色，一眼看出「这句是我说的」；
    房主徽标跟在昵称后面（同名两人时靠它区分）。 */
-.msg.host.me { border-left: 2px solid rgba(24, 95, 165, .5); }
+.msg.host.me { border-left: 2px solid var(--accent-line-strong); }
 .msg-head .badge-owner { margin-left: 2px; }
 
 /* ---------------- /admin：左侧分区导航 + 右侧单块面板（2026-10-15） ----------------
@@ -547,26 +833,26 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
   font-size: 12px;
   padding: 7px 10px;
   border: .5px solid transparent;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-2);
 }
-.navitem:hover { background: #f2f1ee; border-color: transparent; }
+.navitem:hover { background: var(--hover); border-color: transparent; }
 .navitem.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
 .navitem .nav-sub { font-size: 10px; font-style: normal; color: var(--text-3); font-weight: 400; }
-.navitem.active .nav-sub { color: rgba(24, 95, 165, .75); }
+.navitem.active .nav-sub { color: var(--accent-dim); }
 .nav-foot {
   margin-top: auto;
   padding: 10px;
   font-size: 10px;
   color: var(--text-3);
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
 .admin-body {
   overflow-y: auto;
   min-width: 0;
-  background: #fbfbfa;
+  background: var(--panel-3);
 }
 .apanel { display: none; padding: 16px 18px 32px; max-width: 900px; }
 .apanel.active { display: block; }
@@ -581,7 +867,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .panel-note {
   font-size: 11px;
   color: var(--text-3);
-  line-height: 1.8;
+  line-height: 1.85;
   padding-bottom: 10px;
 }
 .panel-note b { color: var(--text-2); }
@@ -596,7 +882,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .apanel textarea.wide {
   width: 100%;
   font: inherit;
-  line-height: 1.65;
+  line-height: 1.7;
 }
 .pwform { display: flex; flex-wrap: wrap; gap: 12px; max-width: 620px; }
 .pwform .field { flex: 1; min-width: 170px; }
@@ -616,4 +902,24 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .userbox .me[hidden] { display: none; }
 .userbox button[hidden] { display: none; }
 
+/* ---------------- 附加项④：hover 轻微过渡（0.18s） ----------------
+   只过渡「颜色类」属性：背景 / 描边 / 文字 / 透明度 / 阴影。
+   不用 `transition: all` —— 那会把宽度、位置这类布局属性也带上动画。
+   想加新过渡控件，往下面两个选择器组里补名字即可。 */
+button, input, select, textarea {
+  transition: background-color .18s ease, border-color .18s ease,
+              color .18s ease, box-shadow .18s ease;
+}
+.room, .navitem, .rblock-head, .card, .person, .trash-item,
+.chip, .status, .me, .room-code, .badge, .badge-owner, .tag-warn,
+.dot, .pdot, .msg-acts, .info-idx {
+  transition: background-color .18s ease, border-color .18s ease,
+              color .18s ease, opacity .18s ease, box-shadow .18s ease;
+}
 
+/* 系统开了「减少动态效果」就整体关掉过渡 */
+@media (prefers-reduced-motion: reduce) {
+  button, input, select, textarea, .room, .navitem, .rblock-head, .card, .person,
+  .trash-item, .chip, .status, .me, .room-code, .badge, .badge-owner, .tag-warn,
+  .dot, .pdot, .msg-acts, .info-idx { transition: none; }
+}

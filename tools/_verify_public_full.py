@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""公网重发布后的完整验收（2026-10-15 第七批：公网删房间 + 回收站按人隔离 + /admin 房间库）。
+"""公网重发布后的完整验收（2026-10-15 第九批：外观「青瓷雅致」只改 style.css）。
 
 六件套 + 一个额外动作：
-  1. HTTP：/、/admin、/api/state、静态资源
+  1. HTTP：/、/admin、/api/state、静态资源 + **线上 style.css 是不是「青瓷雅致」新版**
   2. 新版代码是否真的上线：/api/state 里**没有 banned 键**（旧版有）、admin.js 里没有旧封禁 UI
   3. /admin 登录 + 5 家 Key 生效
   4. WebSocket：wss:// 能不能穿 HTTPS 反代（本机测不出，必须线上测）
@@ -66,6 +66,16 @@ st, body = req('GET', '/static/admin.js', raw=True)
 js = body.decode('utf-8', 'replace') if isinstance(body, bytes) else str(body)
 check('线上 admin.js 已是新版（含「直接删除用户」）', '直接删除用户' in js)
 check('线上 admin.js 已无旧封禁 UI（data-a="unban"）', 'data-a="unban"' not in js)
+
+# 外观改版（2026-10-15 第九批「青瓷雅致」）：这次只改 style.css，
+# 于是用「新版才有的标记」+「旧版才有的颜色」双向断言它真的上线了。
+st, cssb = req('GET', '/static/style.css', raw=True)
+css = cssb.decode('utf-8', 'replace') if isinstance(cssb, bytes) else str(cssb)
+check('线上 style.css 已是「青瓷雅致」新版（主题标记 + 彩色圆点变量）',
+      '青瓷雅致' in css and '--dot-1:' in css,
+      '%s bytes' % (len(cssb) if isinstance(cssb, (bytes, str)) else '?'))
+check('线上 style.css 已无旧主色 #185fa5（旧版才有）', '#185fa5' not in css)
+check('线上 style.css 已含自动深浅色媒体查询', 'prefers-color-scheme: dark' in css)
 
 print('=== 2) 新版后端是否上线 ===')
 st, anon = req('GET', '/api/state')
@@ -215,10 +225,139 @@ else:
                     if t.get('room_id') == tmp_room]
             check('线上没留下自检的房间条目', not left, str([t.get('name') for t in left]))
 
+print('=== 8) 本次重发布的两件事：线上独有房间没被覆盖 + 新前端已上线 ===')
+# 8a) 迁移载荷是「一次性」的：线上已有 data/room_index.json 时会被忽略，
+#     所以线上自己建的房间（本地没有的）必须原样还在。
+if not TOKEN['v']:
+    check('跳过：没有管理令牌', False, '无法核对线上房间列表')
+else:
+    st, st8 = req('GET', '/api/state')
+    rooms8 = ((st8.get('config') or {}).get('rooms') or []) if isinstance(st8, dict) else []
+    ids8 = [r.get('id') for r in rooms8]
+    print('      线上房间：%s' % ids8)
+    check('线上仍有默认讨论室', 'room-default' in ids8, str(ids8))
+    check('线上独有的房间没被重发布覆盖（今晚吃什么-8417b1）',
+          '今晚吃什么-8417b1' in ids8, str(ids8))
+    keep = next((r for r in rooms8 if r.get('id') == '今晚吃什么-8417b1'), None)
+    check('该房间的成员仍在（含「旺袅袅」）',
+          bool(keep) and len(keep.get('members') or []) >= 2,
+          str([m.get('nickname') for m in ((keep or {}).get('members') or [])]))
+    # 8b) 新前端是否上线：跳过失败后前端会提示「已跳过」（这行在 app.js，不在 admin.js）
+    st, appb = req('GET', '/static/app.js', raw=True)
+    appjs = appb.decode('utf-8', 'replace') if isinstance(appb, bytes) else str(appb)
+    check('线上 app.js 已含「已跳过」提示（跳过失败的新前端）', '已跳过' in appjs)
+
+print('=== 9) 逐个「本次新改动」的标记（第十三批：参数悬停说明 + off 档 + 间隔 0.5 秒）===')
+# 判据只用「新版才有的标记」，比版本号可靠（版本号可能忘改，行为差异不会）。
+# ⚠️ 每个断言自己拉一次目标文件 —— 别复用别处读来的变量（第十一批就是这么翻车的：
+#    拿从 admin.js 读来的 js 去断言 app.js 里的字符串，必然 FAIL）。
+_, adminb = req('GET', '/admin', raw=True)
+adminhtml = adminb.decode('utf-8', 'replace') if isinstance(adminb, bytes) else str(adminb)
+# ⚠️ 数气泡要按 `class="help` 前缀数（不能按 `class="help"` 精确数）—— max_tokens 的气泡
+# 带 .help-l 变体（class="help help-l"），精确匹配会漏数、误报 FAIL（本次就红过一回）。
+tip_n = adminhtml.count('class="help')
+check('线上 /admin 已含参数说明气泡（≥6 个）', tip_n >= 6, 'help span = %d 个' % tip_n)
+check('线上 temperature 有悬停说明', 'temperature <span class="help' in adminhtml)
+check('线上 max_tokens 有悬停说明', 'max_tokens <span class="help' in adminhtml)
+check('线上思考档位下拉已含 off 选项（第十二批）', 'value="off"' in adminhtml)
+
+_, cssb = req('GET', '/static/style.css', raw=True)
+css9 = cssb.decode('utf-8', 'replace') if isinstance(cssb, bytes) else str(cssb)
+check('线上 style.css 已含 .help 气泡样式（含 content: attr(data-tip)）',
+      '.help::after' in css9 and 'content: attr(data-tip)' in css9,
+      '%d bytes' % len(css9))
+
+_, idxb = req('GET', '/', raw=True)
+indexhtml = idxb.decode('utf-8', 'replace') if isinstance(idxb, bytes) else str(idxb)
+check('线上首页「间隔」下限已放开到 0.5 秒（第十二批）', 'min="0.5"' in indexhtml)
+
+print('=== 10) 第十三批补丁的标记（弹窗滑杆修复：display:none + 弹窗加宽 + 气泡向左展开）===')
+# 用户截图报「模型编辑窗口下面多一条横向滑杆」。真因 = 气泡用 visibility:hidden 隐藏（**照样占布局**）
+# 把 <dialog> 撑出了横向 overflow。修复后线上必须满足：① 不再用 visibility:hidden；
+# ② 用 display:none 隐藏；③ 模型弹窗加宽到 640；④ max_tokens 的气泡带 .help-l（向左展开）。
+_, cssb2 = req('GET', '/static/style.css', raw=True)
+css10 = cssb2.decode('utf-8', 'replace') if isinstance(cssb2, bytes) else str(cssb2)
+css10_flat = css10.replace('\n', ' ')
+check('线上 style.css 已不再用 visibility:hidden 隐藏气泡（滑杆真因）',
+      '.help::after' not in css10 or not __import__('re').search(
+          r'\.help::after\s*\{[^}]*visibility:\s*hidden', css10))
+check('线上 style.css 气泡已改为 display:none 隐藏',
+      __import__('re').search(r'\.help::after\s*\{[^}]*display:\s*none', css10) is not None)
+check('线上模型编辑弹窗已加宽到 640px',
+      __import__('re').search(r'#dlgModel\s*\{[^}]*max-width:\s*640px', css10_flat) is not None)
+_, adminb2 = req('GET', '/admin', raw=True)
+adminhtml10 = adminb2.decode('utf-8', 'replace') if isinstance(adminb2, bytes) else str(adminb2)
+check('线上 max_tokens 的气泡已带 .help-l（向左展开）', 'help help-l' in adminhtml10)
+
+print('=== 11) 第十四～十六批的标记（关思考从「按厂商」改成「按模型」，再加家族级风险旗标）===')
+# 上一版是「按厂商」写死的关法表；这一版改成运行时按「模型家族 × 托管厂商」算：
+#  ① 每个模型随 /api/state 带一份 off_plan（卡片角标与弹窗提示都用它）；
+#  ② 新增 GET /api/thinking_off（管理员专用，只算不发、不耗额度）；
+#  ③ 模型弹窗多一个「off 关法」下拉，可手动覆盖自动判定；
+#  ④ 🔴 第十六批：族里出过「关不掉」型号的家族（智谱 GLM / 腾讯 Kimi / DeepSeek），
+#     同族**新型号**一律降级为「未核实 → 什么都不发」—— 挡住下一个 glm-5.4 被硬发打成 400。
+_, adminb3 = req('GET', '/admin', raw=True)
+adminhtml11 = adminb3.decode('utf-8', 'replace') if isinstance(adminb3, bytes) else str(adminb3)
+check('线上模型弹窗已有「off 关法」下拉（第十五批）', 'id="mOffMode"' in adminhtml11)
+check('线上模型弹窗已有判定提示行（off_note 落点）', 'id="mOffNotice"' in adminhtml11)
+
+_, jsb = req('GET', '/static/admin.js', raw=True)
+adminjs11 = jsb.decode('utf-8', 'replace') if isinstance(jsb, bytes) else str(jsb)
+check('线上 admin.js 会为每个模型重新问后端要判定（模型 ID 一变就刷新）',
+      'refreshOffPlan' in adminjs11 and '/api/thinking_off' in adminjs11)
+
+_, cssb3 = req('GET', '/static/style.css', raw=True)
+css11 = cssb3.decode('utf-8', 'replace') if isinstance(cssb3, bytes) else str(cssb3)
+check('线上 style.css 已含「可关思考」角标样式（.tag-ok）', '.tag-ok' in css11)
+check('线上 style.css 已含判定提示的警示样式（tip-warn）', 'tip-warn' in css11)
+
+# 无令牌必须被拒：这个接口只在 /admin 用，不能给普通用户开口子。
+try:
+    op.open(urllib.request.Request(BASE + '/api/thinking_off?provider=zhipu&model=glm-5.3-flash'),
+            timeout=30)
+    check('不带管理令牌访问 /api/thinking_off 被拒（401）', False, '居然 200 了')
+except urllib.error.HTTPError as e:
+    check('不带管理令牌访问 /api/thinking_off 被拒（401）', e.code == 401, 'HTTP %d' % e.code)
+except Exception as e:
+    check('不带管理令牌访问 /api/thinking_off 被拒（401）', False, '%s: %s' % (type(e).__name__, e))
+
+if not TOKEN['v']:
+    check('跳过：没有管理令牌，无法核对 /api/thinking_off 的判定', False,
+          '先看第 3 节登录是否成功')
+else:
+    _, j_ok = req('GET', '/api/thinking_off?provider=hunyuan&model=kimi-k3')
+    check('线上按模型判「能关」（腾讯 kimi-k3 → supported=True 且说清会发什么字段）',
+          isinstance(j_ok, dict) and j_ok.get('supported') is True and bool(j_ok.get('wire')),
+          str(j_ok)[:140])
+    _, j_no = req('GET', '/api/thinking_off?provider=zhipu&model=glm-5.3-flash')
+    check('线上按模型判「关不掉」（智谱 glm-5.3 → supported=False，什么都不发）',
+          isinstance(j_no, dict) and j_no.get('supported') is False, str(j_no)[:140])
+    _, j_new = req('GET', '/api/thinking_off?provider=zhipu&model=glm-5.4')
+    check('🔴 家族级风险旗标已上线：同族新型号 glm-5.4 判「未核实」（supported=None）',
+          isinstance(j_new, dict) and j_new.get('supported') is None, str(j_new)[:140])
+    _, j_ver = req('GET', '/api/thinking_off?provider=zhipu&model=glm-4.7-air')
+    check('风险族里「点名核对过」的型号照旧能关（glm-4.7-air → supported=True）',
+          isinstance(j_ver, dict) and j_ver.get('supported') is True, str(j_ver)[:140])
+
+    _, st11 = req('GET', '/api/state')
+    models11 = ((st11.get('config') or {}).get('models') or []) if isinstance(st11, dict) else []
+    check('线上每个模型都带 off_plan（卡片角标要用）',
+          bool(models11) and all('off_plan' in m for m in models11),
+          str([m.get('id') for m in models11 if 'off_plan' not in m])[:100])
+    check('线上状态带 off 关法下拉的选项',
+          [o.get('value') for o in ((st11.get('config') or {}).get('off_mode_options') or [])]
+          == ['', 'thinking', 'enable_thinking', 'reasoning_effort_none', 'none'])
+    check('线上模型库保留了手动指定的关法（智谱那条 thinking_off_mode）',
+          any((m.get('thinking_off_mode') or '') == 'enable_thinking' for m in models11),
+          str([(m.get('id'), m.get('thinking_off_mode')) for m in models11])[:120])
+
 print()
 if fails:
     print('失败 %d 项：' % len(fails))
     for f in fails:
         print('   -', f)
     sys.exit(1)
-print('公网验收通过：HTTP / 新版后端 / wss / 真实模型 / 直接删除 / 线上删房间+清回收站，全部正常。')
+print('公网验收通过：HTTP / 新版后端 / 外观「青瓷雅致」/ wss / 真实模型 / 直接删除 / '
+      '线上删房间+清回收站 / 线上独有房间未丢 / 跳过失败的新前端 / '
+      '参数悬停说明 + off 档 + 间隔 0.5 秒 / 弹窗滑杆修复 / '
+      '关思考按模型判 + 家族级风险旗标，全部正常。')

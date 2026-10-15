@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
-"""只读探针：try 用默认口令登线上 /admin，成功就列出线上房间（含 code / owner_key），
-供 make_deploy_copy.py --merge-rooms 使用。不写任何东西到线上。
+"""只读探针：try 用默认口令登线上 /admin，成功就列出线上房间，供 make_deploy_copy.py --merge-rooms 使用。
+不写任何东西到线上。
 
     python tools/_probe_online_rooms.py [--password XXXX] [--out tools/_online_rooms.json]
+
+⚠️ **必须带 `--out`**：不带的话 `tools/_online_rooms.json` 还是上一次的快照，`--merge-rooms`
+   会把一个线上早已不存在的房间 id 并进载荷（2026-10-15 第十一批踩过）。
+
+⚠️ **`code`（房间号）与 `owner_key`（房主钥匙）在 `/api/state` 里取不到** —— 普通口径和
+   管理员口径都不给（实测值恒为 `None` / 空串），它们是刻意不外发的凭据字段。
+   所以 `--merge-rooms` 并进来的房间**只有定义**（名称 / 参与者 / 成员 / owner_uid / open…）：
+   房间号与房主钥匙**并不过来**，线上若真消费了这份载荷，该房间会重新分配房间号、原房主失去旧钥匙。
+   （但线上已有 `data/room_index.json` 时载荷是被忽略的 no-op，线上一切原样 —— 本批就是这种情况。）
 """
 from __future__ import annotations
 
@@ -53,9 +62,9 @@ def main() -> int:
     rooms = cfg.get('rooms') or []
     print('线上 config 里的房间 %d 个：' % len(rooms))
     for x in rooms:
-        print('  - id=%s | name=%s | open=%s | no_owner=%s | code=%r | owner_key=%s | owner_uid=%s | 参与者 %d | 成员 %d'
+        # ⚠️ code / owner_key 一律取不到（管理员口径也不给），别再打印它们、免得误以为"拿到了"。
+        print('  - id=%s | name=%s | open=%s | no_owner=%s | owner_uid=%s | 参与者 %d | 成员 %d'
               % (x.get('id'), x.get('name'), x.get('open'), x.get('no_owner'),
-                 x.get('code'), (x.get('owner_key') or '')[:8] + '…' if x.get('owner_key') else '',
                  x.get('owner_uid'), len(x.get('participants') or []), len(x.get('members') or [])))
     print('用户表：', [u.get('nickname') for u in (st.get('users') or [])])
     print('管理口令是否还是默认值：', (cfg.get('admin') or {}).get('uses_default_password'))

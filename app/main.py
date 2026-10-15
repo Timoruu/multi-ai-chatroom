@@ -600,6 +600,23 @@ async def api_delete_model(mid: str, request: Request):
     return {'ok': True}
 
 
+@app.get('/api/thinking_off')
+async def api_thinking_off(request: Request, provider: str = '', model: str = '',
+                           mode: str = ''):
+    """「这一个模型能不能关思考、怎么关、凭什么这么说」。
+
+    为什么要有这个接口：关思考的开关归**模型**管，不归厂商管 —— 百炼同时挂 Qwen / DeepSeek /
+    GLM / Kimi，TokenHub 同时挂混元 / GLM / DeepSeek / Kimi / MiniMax，同一个网关里
+    DeepSeek 关得掉、GLM-5.3 关不掉。所以模型编辑弹窗在「模型 ID」一变就要重新问一次。
+    """
+    _require_admin(request)
+    plan = providers.thinking_off_plan(provider, model)
+    body = providers.resolve_off_body(provider, model, mode)
+    plan['body'] = body
+    plan['wire'] = providers._off_wire(body) or '（不发任何参数）'
+    return plan
+
+
 @app.post('/api/probe')
 async def api_probe(request: Request, payload: dict = Body(...)):
     """探活一个模型。⚠️ 通不过时先看 model / base_url，别怀疑代码。
@@ -625,6 +642,8 @@ async def api_probe(request: Request, payload: dict = Body(...)):
             # 未保存规格的探活也要带上思考档位，否则「先试再存」试出来的行为
             # 和保存后不一致（档位由 providers.build_payload 按厂商翻译）。
             'thinking_level': (payload.get('thinking_level') or '').strip(),
+            # off 关法同理：手选的那一项也要生效，否则探活通过、保存后却是另一种关法。
+            'thinking_off_mode': (payload.get('thinking_off_mode') or '').strip(),
         }
     if not cfg:
         raise HTTPException(404, '模型不存在')

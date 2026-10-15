@@ -709,7 +709,8 @@ async def main() -> int:
         payload = {
             'id': mid, 'provider': 'mock', 'display_name': '自检·临时模型',
             'model': 'mock-picky', 'temperature': 0.5,
-            'max_tokens': 200, 'thinking_level': 'max', 'enabled': True,
+            'max_tokens': 200, 'thinking_level': 'max',
+            'thinking_off_mode': 'enable_thinking', 'enabled': True,
         }
         r = await http.post(base + '/api/models', json=payload)
         check('POST /api/models 新增模型成功', r.status_code == 200)
@@ -717,6 +718,8 @@ async def main() -> int:
         raw = open(cfg_path, encoding='utf-8').read()
         check('新模型已落盘到 config.json（不是只改了内存）', mid in raw)
         check('思考档位随模型一起落盘', '"thinking_level": "max"' in raw)
+        check('off 关法也随模型一起落盘（第十四批新增字段）',
+              '"thinking_off_mode": "enable_thinking"' in raw)
 
         # ---------- 2a. 思考档位：统一命名 → 按厂商方言翻译（2026-10-13 新增）----------
         # 界面只给 low/high/max 三个档，真正发什么参数由 providers.REASONING_DIALECT 决定。
@@ -738,10 +741,113 @@ async def main() -> int:
               _prov.build_payload({**_mcfg, 'thinking_level': 'low',
                                    'extra_body': {'reasoning_effort': 'high'}}, [], False
                                   ).get('reasoning_effort') == 'high')
+        # ---- 2a-2. off 档：彻底关思考（第十二批新增；**第十四批改成按模型判**）----
+        # off 绝不能当档位值发出去（没有厂商认 'off'），要走「关法表」。判定按
+        # 「模型家族 × 托管厂商」—— 因为同一家网关底下挂着别家的模型是常态
+        # （百炼挂 Qwen/DeepSeek/GLM/Kimi，TokenHub 挂混元/GLM/DeepSeek/Kimi/MiniMax）。
+        _p_off_ark = _prov.build_payload({'provider': 'ark', 'model': 'doubao-seed-2-1-lite-260915',
+                                          'thinking_level': 'off'}, [], False)
+        check('off 档走 ark 方言 thinking.type=disabled（不是发 reasoning_effort="off"）',
+              _p_off_ark.get('thinking') == {'type': 'disabled'}
+              and 'reasoning_effort' not in _p_off_ark,
+              str({k: v for k, v in _p_off_ark.items() if k != 'messages'}))
+        _p_off_ds = _prov.build_payload({'provider': 'dashscope', 'model': 'qwen3.8-flash',
+                                         'thinking_level': 'off'}, [], False)
+        check('off 档走 dashscope 方言 enable_thinking=False',
+              _p_off_ds.get('enable_thinking') is False
+              and 'reasoning_effort' not in _p_off_ds)
+        _p_off_zp = _prov.build_payload({'provider': 'zhipu', 'model': 'glm-4.7-flash',
+                                         'thinking_level': 'off'}, [], False)
+        check('off 档在智谱上会发关闭参数（第十四批更正：以前「智谱关不掉」的结论是错的）',
+              _p_off_zp.get('thinking') == {'type': 'disabled'}
+              and 'reasoning_effort' not in _p_off_zp,
+              str({k: v for k, v in _p_off_zp.items() if k != 'messages'}))
+        # 🔴 本批的核心：**同一个厂商底下，能不能关是按模型分的**。断言必须覆盖「同网关一正一反」，
+        # 只测某一家整体「能不能关」是测不出这个 bug 的。
+        _off_ok = _prov.build_payload({'provider': 'hunyuan', 'model': 'deepseek-v4-flash',
+                                       'thinking_level': 'off'}, [], False)
+        _off_no = _prov.build_payload({'provider': 'hunyuan', 'model': 'glm-5.3',
+                                       'thinking_level': 'off'}, [], False)
+        check('同一家网关（腾讯）里 DeepSeek 发了关闭参数',
+              _off_ok.get('thinking') == {'type': 'disabled'},
+              str({k: v for k, v in _off_ok.items() if k != 'messages'}))
+        check('同一家网关（腾讯）里 GLM-5.3 什么都不发（硬发会被厂商回 400）',
+              'thinking' not in _off_no and 'enable_thinking' not in _off_no
+              and 'reasoning_effort' not in _off_no,
+              str({k: v for k, v in _off_no.items() if k != 'messages'}))
+        _off_53 = _prov.build_payload({'provider': 'zhipu', 'model': 'glm-5.3-flash',
+                                       'thinking_level': 'off'}, [], False)
+        check('智谱 GLM-5.3 系列关不掉 → off 档什么都不发',
+              'thinking' not in _off_53 and 'reasoning_effort' not in _off_53)
+        check('没核实过的网关（mock）也不硬发',
+              'thinking' not in _prov.build_payload({'provider': 'mock', 'model': 'mock-x',
+                                                     'thinking_level': 'off'}, [], False))
+        check('「off 关法」手动指定 thinking 时，即使模型关不掉也照发（给未核实模型留的口子）',
+              _prov.build_payload({'provider': 'zhipu', 'model': 'glm-5.3-flash',
+                                   'thinking_level': 'off', 'thinking_off_mode': 'thinking'}, [], False
+                                  ).get('thinking') == {'type': 'disabled'})
+        check('「off 关法」手动指定「不发」时不带任何思考字段',
+              'thinking' not in _prov.build_payload(
+                  {'provider': 'ark', 'model': 'doubao-seed-2-1-lite-260915',
+                   'thinking_level': 'off', 'thinking_off_mode': 'none'}, [], False))
+        check('off 档在 extra_body 之后仍可被手写覆盖',
+              _prov.build_payload({'provider': 'ark', 'model': 'x', 'thinking_level': 'off',
+                                   'extra_body': {'thinking': {'type': 'enabled'}}}, [], False
+                                  ).get('thinking') == {'type': 'enabled'})
+        check('模型家族能按 model id 认出来',
+              _prov.model_family('glm-4.7-flash') == 'glm'
+              and _prov.model_family('doubao-seed-2-1-pro-260915') == 'doubao'
+              and _prov.model_family('kimi-k3') == 'kimi'
+              and _prov.model_family('没见过的模型') == '')
+        _plan_ok = _prov.thinking_off_plan('hunyuan', 'deepseek-v4-flash')
+        _plan_no = _prov.thinking_off_plan('hunyuan', 'glm-5.3')
+        check('判定表：可关的带字段 + 依据标「实测」+ 有说明',
+              _plan_ok['supported'] is True and _plan_ok['source'] == '实测'
+              and _plan_ok['body'] and bool(_plan_ok['note']), str(_plan_ok)[:120])
+        check('判定表：关不掉的 supported=False 且 body 为空',
+              _plan_no['supported'] is False and _plan_no['body'] == {}, str(_plan_no)[:120])
+        # ---- 2a-3. 家族级「风险旗标」（第十五批·用户选 A 方案）----
+        # 上面那套是「家族级宽匹配」，好处是新模型免配置，坏处是挡不住同族里新出的
+        # 强制思考型号（智谱 GLM-5.3 就是实测回 400 的例子）。所以：凡「族里出过关不掉型号」
+        # 的家族，同族**新型号**一律降级为「未核实 → 什么都不发」，只有 OFF_VERIFIED_MODELS
+        # 里点名核对过的型号才照发。
+        _plan_new = _prov.thinking_off_plan('zhipu', 'glm-5.4')
+        check('风险家族（智谱 GLM）里没核对过的新型号不发 —— 挡住下一个 glm-5.4 被硬发打成 400',
+              _plan_new['supported'] is None
+              and 'thinking' not in _prov.build_payload(
+                  {'provider': 'zhipu', 'model': 'glm-5.4', 'thinking_level': 'off'}, [], False),
+              str(_plan_new)[:120])
+        check('风险家族里点名核对过的型号照旧能关（glm-4.7 系列）',
+              _prov.thinking_off_plan('zhipu', 'glm-4.7-air')['supported'] is True
+              and _prov.build_payload({'provider': 'zhipu', 'model': 'glm-4.7-air',
+                                       'thinking_level': 'off'}, [], False
+                                      ).get('thinking') == {'type': 'disabled'})
+        check('非风险家族的新型号仍然免配置直接生效（百炼新 qwen）',
+              _prov.thinking_off_plan('dashscope', 'qwen3.9-flash')['supported'] is True
+              and _prov.build_payload({'provider': 'dashscope', 'model': 'qwen3.9-flash',
+                                       'thinking_level': 'off'}, [], False
+                                      ).get('enable_thinking') is False)
+        check('风险家族的新型号要在界面上说清为什么不发 + 指路手动指定',
+              '手动指定' in _plan_new['note'] and bool(_prov.THINKOFF_FAMILY_RISK))
         _st0 = (await http.get(base + '/api/state')).json()
         _dl = ((_st0['config']['providers'].get('zhipu') or {}).get('reasoning_dialect') or {})
         check('前端能拿到该厂商的档位方言说明',
               _dl.get('param') == 'reasoning_effort' and bool(_dl.get('note')), str(_dl)[:70])
+        _dl_ark = ((_st0['config']['providers'].get('ark') or {}).get('reasoning_dialect') or {})
+        check('前端能拿到该厂商的关法（ark → 有可发字段）',
+              _dl_ark.get('off_supported') is True and bool(_dl_ark.get('off_note')))
+        _models0 = _st0['config'].get('models') or []
+        check('状态里每个模型都带 off_plan（卡片角标要用）',
+              bool(_models0) and all('off_plan' in m for m in _models0),
+              str([m.get('id') for m in _models0 if 'off_plan' not in m])[:80])
+        check('状态里带 off 关法下拉框的选项',
+              [o.get('value') for o in (_st0['config'].get('off_mode_options') or [])]
+              == ['', 'thinking', 'enable_thinking', 'reasoning_effort_none', 'none'])
+        _r_off = await http.get(base + '/api/thinking_off',
+                                params={'provider': 'hunyuan', 'model': 'kimi-k3'})
+        check('GET /api/thinking_off 能按模型给出判定（含实际会发的字段）',
+              _r_off.status_code == 200 and _r_off.json().get('supported') is True
+              and bool(_r_off.json().get('wire')), str(_r_off.json())[:120])
         st2 = (await http.get(base + '/api/state')).json()
         check('新模型立刻出现在状态里',
               any(m['id'] == mid for m in st2['config']['models']))
@@ -870,10 +976,10 @@ async def main() -> int:
             gap_room = gr.json()['room']
             gap_key = gr.json().get('ownerKey') or ''
             OWNER_KEYS[gap_room['id']] = gap_key
-            # 故意填一个远低于下限的值：服务端必须钳到 3 秒，而不是照单全收
+            # 故意填一个远低于下限的值（100ms）：服务端必须钳到下限 500ms，而不是照单全收
             await http.patch(base + f'/api/rooms/{gap_room["id"]}',
                              headers=keys_header(),
-                             json={'debate': {'auto_speak': True, 'auto_speak_gap_ms': 500}})
+                             json={'debate': {'auto_speak': True, 'auto_speak_gap_ms': 100}})
             evs = await ws_join(c, gap_room['id'], 'selftest-owner', '自检主持', owner_key=gap_key)
             check('切到间隔房间（同一连接换房间）', first(evs, 'joined') is not None,
                   str(first(evs, 'join_error'))[:100])
@@ -901,14 +1007,60 @@ async def main() -> int:
             total_gap = next((e.get('total') for e in evs if e.get('type') == 'run_start'), 0)
             check('间隔房间按 2 位参与者展开', total_gap == 2, f'total={total_gap}')
             check('换人前先广播等待提示（gap 事件）', bool(seen_gap), f'ms={gap_ms}')
-            check('低于下限的间隔被锁到 3 秒（用户要求至少 3 秒）',
-                  gap_ms is not None and gap_ms >= 3000, f'配置 500ms -> 实际 {gap_ms}ms')
-            check('换人确实等了 >=2.5 秒才让下一位开口',
-                  bool(t_gap and t_next) and (t_next - t_gap) >= 2.5,
+            check('低于下限的间隔被锁到 0.5 秒（2026-10-14 下限由 3 秒放宽到 0.5 秒）',
+                  gap_ms is not None and gap_ms >= 500, f'配置 100ms -> 实际 {gap_ms}ms')
+            check('换人确实等了 >=0.4 秒才让下一位开口',
+                  bool(t_gap and t_next) and (t_next - t_gap) >= 0.4,
                   f'{round((t_next - t_gap), 2) if (t_gap and t_next) else "?"}s')
             check('两位参与者都完成了发言', len(speakers) == 2, str(speakers))
             check('发言顺序 = 房间 participants 数组顺序（不是按名字/分数排序）',
                   speakers == ['自检·房间链路用', '自检·间隔用二号'], str(speakers))
+
+            # 4a4. 单个模型调用失败 → 跳过它、下一位继续，整轮不再报废（2026-10-15 用户要求）
+            # 造一个「必然失败」的模型：未知厂商 + 没有 base_url → stream_chat 第一行就抛 ProviderError，
+            # 不花钱、不等待、结果确定。排在他后面的 mock 模型必须照样开口。
+            bad_mid = 'selftest-broken-model'
+            r = await http.post(base + '/api/models', json={
+                'id': bad_mid, 'provider': 'selftest-不存在', 'display_name': '自检·必失败',
+                'model': 'nope', 'enabled': True,
+            })
+            check('自检自建「必失败」模型成功（未知厂商 + 无 base_url = 必然失败）', r.status_code == 200)
+            sr = await http.post(base + '/api/rooms',
+                                 json={'name': '自检·失败跳过房间', 'model_refs': [bad_mid, room_mid]})
+            skip_room = sr.json()['room']
+            skip_key = sr.json().get('ownerKey') or ''
+            OWNER_KEYS[skip_room['id']] = skip_key
+            await http.patch(base + f'/api/rooms/{skip_room["id"]}', headers=keys_header(),
+                             json={'debate': {'auto_speak': True, 'auto_speak_gap_ms': 3000}})
+            evs = await ws_join(c, skip_room['id'], 'selftest-owner', '自检主持', owner_key=skip_key)
+            check('切到失败跳过房间', first(evs, 'joined') is not None,
+                  str(first(evs, 'join_error'))[:100])
+            await c.send({'type': 'host_message', 'roomId': skip_room['id'],
+                          'content': '（失败跳过自检）请每位依次说一句。', 'auto': True})
+            skip_errs, skip_msgs, skip_run_end = [], [], False
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                batch = await c.wait(['message', 'message_error', 'run_end', 'error'], timeout=90)
+                for e in batch:
+                    t = e.get('type')
+                    if t == 'message_error':
+                        skip_errs.append(e)
+                    elif t == 'message' and (e.get('message') or {}).get('role') == 'model':
+                        skip_msgs.append(e['message'])
+                    elif t == 'run_end':
+                        skip_run_end = True
+                if skip_run_end:
+                    break
+            check('失败的那位收到 message_error，且带 name + skipped 标记',
+                  len(skip_errs) == 1 and skip_errs[0].get('skipped') is True
+                  and skip_errs[0].get('name') == '自检·必失败',
+                  str([(e.get('name'), e.get('skipped')) for e in skip_errs]))
+            check('失败的模型没有把半截内容写进历史',
+                  all(m.get('speaker') != '自检·必失败' for m in skip_msgs),
+                  str([m.get('speaker') for m in skip_msgs]))
+            check('轮次没被中断：排在后面的模型照样发言', len(skip_msgs) == 1,
+                  str([m.get('speaker') for m in skip_msgs]))
+            check('整轮正常收尾（run_end，而不是 error 中断）', skip_run_end)
 
             # 切回主房间继续后面的指令测试（同一连接换房间要能正常重新加入）
             evs = await ws_join(c, new_room['id'], 'selftest-owner', '自检主持', owner_key=new_key)
@@ -1458,7 +1610,8 @@ async def main() -> int:
 
         # ---------- 8. 清理自检产生的房间 ----------
         # 自检房间也走回收站，然后把**只属于自检**的条目交出去，不给用户留垃圾。
-        cleanup_ids = [dup['id'], (real_room or {}).get('id'), (gap_room or {}).get('id')]
+        cleanup_ids = [dup['id'], (real_room or {}).get('id'), (gap_room or {}).get('id'),
+                       (skip_room or {}).get('id')]
         cleanup_ids += list((mp or {}).get('rooms') or [])
         cleanup_ids += list((op or {}).get('rooms') or [])
         cleanup_ids += list((cr or {}).get('rooms') or [])
@@ -1467,7 +1620,7 @@ async def main() -> int:
         st4 = (await http.get(base + '/api/state')).json()
         check('自检房间已清理', len(st4['rooms']) == len(rooms0), f"{len(st4['rooms'])} 个房间")
         # 自检临时模型也要删掉，模型库回到跑之前的样子
-        for _mid in [room_mid, gap_mid] + list((mp or {}).get('models') or []):
+        for _mid in [room_mid, gap_mid, bad_mid] + list((mp or {}).get('models') or []):
             r = await http.delete(base + f'/api/models/{_mid}')
             check(f'自检临时模型已清理（{_mid}）', r.status_code == 200, f'HTTP {r.status_code}')
         st_models = (await http.get(base + '/api/state')).json()

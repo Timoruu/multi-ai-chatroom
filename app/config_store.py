@@ -438,6 +438,8 @@ class ConfigStore:
             # 思考档位：统一 low/high/max（空 = 不干预）。真正发什么参数由
             # providers.build_payload 按厂商方言翻译，这里只负责把值带过去。
             'thinking_level': (m.get('thinking_level') or '').strip(),
+            # off 档的关法：空 = 自动（按 providers 的实测表判），也可在页面上手动指定。
+            'thinking_off_mode': str(m.get('thinking_off_mode') or '').strip(),
             'role_id': '',
             'role_name': '',
             'role': '',
@@ -508,6 +510,26 @@ class ConfigStore:
             prov['key_source'] = 'config' if key else ('env' if has_env else '')
             # 思考档位的方言说明（参数名 + 实测备注），前端在档位下拉框下面直接显示。
             prov['reasoning_dialect'] = providers_mod.reasoning_dialect(pid)
+        # 「能不能关思考」是**按模型**判的，不是按厂商（同一个 TokenHub 里 DeepSeek 关得掉、
+        # GLM-5.3 关不掉）—— 所以每个模型随状态带一份解析结果，卡片和弹窗直接用，前端不用猜。
+        for m in (data.get('models') or []):
+            pid_m = m.get('provider') or ''
+            mid_m = m.get('model') or ''
+            plan = providers_mod.thinking_off_plan(pid_m, mid_m)
+            # 页面上手动指定过关法时，卡片/弹窗要说的是**实际会发的那个字段**，
+            # 而不是自动表里那个 —— 否则提示和真发出去的东西不一致。
+            mode = str(m.get('thinking_off_mode') or '').strip()
+            if mode:
+                body = providers_mod.resolve_off_body(pid_m, mid_m, mode)
+                plan['body'] = body
+                plan['override'] = mode
+                plan['supported'] = bool(body)
+                plan['source'] = '手动指定'
+                plan['note'] = ('这一位在页面上手动指定了关法：'
+                                + (providers_mod._off_wire(body) or '不发任何参数（保持厂商默认）') + '。')
+            m['off_plan'] = plan
+        data['off_mode_options'] = [{'value': v, 'label': l}
+                                    for v, l in providers_mod.OFF_MODE_OPTIONS]
         # admin 只多拿「口令什么时候改的 / 是否还在用默认口令」这两条提示，不拿哈希
         data['admin'] = {
             'updated_at': adm.get('updated_at') or '',
@@ -607,7 +629,8 @@ class ConfigStore:
             if not mid:
                 mid = _slug(payload.get('display_name') or '', 'model') + '-' + uuid.uuid4().hex[:6]
             allowed = ('provider', 'display_name', 'model', 'temperature', 'max_tokens',
-                       'thinking_level', 'enabled', 'base_url', 'model_note', 'model_verified')
+                       'thinking_level', 'thinking_off_mode', 'enabled', 'base_url',
+                       'model_note', 'model_verified')
             item = next((m for m in models if m.get('id') == mid), None)
             if item is None:
                 item = {'id': mid, 'enabled': True}

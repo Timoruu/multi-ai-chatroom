@@ -183,11 +183,22 @@ function renderModels() {
     const meta = `${m.model} · ${provName}`;
     const inRooms = (S.config.rooms || []).filter((r) =>
       (r.participants || []).some((p) => p.model_ref === m.id));
+    // 「能不能关思考」是按模型判的（同一个网关里也有能关和关不掉的），卡片上直接给结论，
+    // 不用点开弹窗才知道 —— 关不掉的用 warn 角标，能关的用 ok 角标。
+    const off = m.off_plan || null;
+    const offTitle = off ? esc(off.note || '') : '';
+    const offChip = !off ? ''
+      : (off.supported === false
+        ? `<span class="tag-warn" title="${offTitle}">思考关不掉</span>`
+        : (off.supported === true
+          ? `<span class="tag-ok" title="${offTitle}">可关思考</span>`
+          : ''));
     el.innerHTML = `
       <div class="card-top">
         <span class="dot ${m.enabled ? 'on' : ''}"></span>
         <span class="card-name" title="${esc(m.display_name)}">${esc(m.display_name)}</span>
         ${m.model_verified ? '' : '<span class="tag-warn" title="该模型 ID 尚未探活通过：点「探活」验证，或先去厂商控制台开通">⚠ 未核实</span>'}
+        ${offChip}
       </div>
       <div class="card-sub one" title="${esc(meta)}">${esc(meta)}</div>
       <div class="card-sub one" title="${esc(inRooms.map((r) => r.name).join('、'))}">
@@ -585,6 +596,7 @@ function openModelDialog(model) {
     .map(([pid, p]) => `<option value="${esc(pid)}">${esc(p.name)}</option>`).join('');
 
   const lv = $('#mThinkLevel');
+  fillOffMode();
   if (model) {
     sel.value = model.provider;
     $('#mBaseUrl').value = model.base_url || '';
@@ -593,6 +605,7 @@ function openModelDialog(model) {
     $('#mTemp').value = model.temperature != null ? model.temperature : 0.8;
     $('#mMaxTokens').value = model.max_tokens || 1200;
     lv.value = model.thinking_level || '';
+    $('#mOffMode').value = model.thinking_off_mode || '';
     $('#mEnabled').checked = model.enabled !== false;
   } else {
     $('#mBaseUrl').value = (S.config.providers[sel.value] || {}).base_url || '';
@@ -601,16 +614,20 @@ function openModelDialog(model) {
     $('#mTemp').value = 0.8;
     $('#mMaxTokens').value = 1200;
     lv.value = '';
+    $('#mOffMode').value = '';
     $('#mEnabled').checked = true;
   }
   renderThinkNotice();
+  // 关法要按「具体模型」判，所以：有保存过的解析结果先用着，然后按当前填的内容再问一次后端。
+  renderOffNotice(model ? model.off_plan : null);
+  refreshOffPlan();
   $('#mModelOptions').innerHTML = modelListNotice(sel.value);
   $('#mProbeResult').textContent = '';
   $('#mProbeResult').className = 'probe';
   $('#dlgModel').showModal();
 }
 
-/* 思考档位的方言提示：告诉用户「这一家的 low/high/max 实际会发生什么」。
+/* 思考档位的方言提示：告诉用户「这一家的 off/low/high/max 实际会发生什么」。
    文字来自后端 providers.reasoning_dialect()，是逐家实测的结果，不是套话。 */
 const THINK_CAVEAT = '注意：免费线路的思考量本身会抖动，档位是「倾向」不是「保证」。';
 function renderThinkNotice() {
@@ -620,15 +637,68 @@ function renderThinkNotice() {
   const lv = $('#mThinkLevel').value;
   const d = ((S.config.providers || {})[pid] || {}).reasoning_dialect || null;
   const parts = [];
-  if (!lv) {
+  if (lv === 'off') {
+    // off＝彻底关思考。到底关得掉关不掉、会发什么参数，**按具体模型**判 ——
+    // 结论统一由下面「off 关法」那一行给（后端 thinking_off_plan），这里不重复判断，
+    // 免得同一个弹窗里出现两种说法。
+    parts.push('off＝彻底关掉思考；这一个能不能关、会发什么参数，看下面「off 关法」那一行。');
+  } else if (!lv) {
     parts.push('不设置＝不干预，走厂商默认行为（多数模型默认就会思考）。');
   } else if (d && d.param) {
     parts.push(`这一家会发 ${d.param}: "${lv}"。`);
   }
   if (d && d.note) parts.push(d.note);
   if (d && !d.tested) parts.push('（该厂商未实测，按通用参数发送。）');
-  if (lv) parts.push(THINK_CAVEAT);
+  if (lv && lv !== 'off') parts.push(THINK_CAVEAT);
   box.textContent = parts.join(' ');
+}
+
+/* off 关法：能不能关、到底发什么参数，**按具体模型**判 —— 同一个网关里也有能关和关不掉的
+   （百炼挂的 DeepSeek 关得掉、GLM-5.3 关不掉）。规则只在后端 providers.thinking_off_plan()
+   一份，前端不复制，只负责显示；所以模型 ID 一变就重新问一次后端。 */
+function fillOffMode() {
+  const sel = $('#mOffMode');
+  if (!sel || sel.dataset.filled === '1') return;
+  const opts = (S.config && S.config.off_mode_options) || [];
+  const list = opts.length ? opts : [{ value: '', label: '自动（按实测表）' }];
+  sel.innerHTML = list.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+  sel.dataset.filled = '1';
+}
+
+function renderOffNotice(plan) {
+  const box = $('#mOffNotice');
+  if (!box) return;
+  const mode = $('#mOffMode') ? $('#mOffMode').value : '';
+  const parts = [];
+  if (plan && plan.family) parts.push(`模型家族识别为「${plan.family}」。`);
+  if (mode) {
+    parts.push('已手动指定关法，不再按自动判定走。');
+  } else if (plan && plan.supported === true) {
+    parts.push('✅ 这一个能关思考。' + (plan.note || ''));
+  } else if (plan && plan.supported === false) {
+    parts.push('⛔ 这一个关不掉，选 off 不会提速。' + (plan.note || ''));
+  } else if (plan) {
+    parts.push('❓ ' + (plan.note || '这个组合没核实过。'));
+  }
+  if (plan && plan.source) parts.push(`（依据：${plan.source}）`);
+  box.textContent = parts.join(' ');
+  box.className = 'tip' + (plan && plan.supported === false ? ' tip-warn' : '');
+}
+
+let offPlanTimer = null;
+function refreshOffPlan() {
+  clearTimeout(offPlanTimer);
+  offPlanTimer = setTimeout(async () => {
+    const provider = $('#mProvider').value;
+    const model = $('#mModel').value.trim();
+    const mode = $('#mOffMode') ? $('#mOffMode').value : '';
+    if (!model) { renderOffNotice(null); return; }
+    try {
+      const plan = await api(`/api/thinking_off?provider=${encodeURIComponent(provider)}`
+        + `&model=${encodeURIComponent(model)}&mode=${encodeURIComponent(mode)}`);
+      renderOffNotice(plan);
+    } catch (e) { /* 拿不到就保留上一次的说明，不打断编辑 */ }
+  }, 300);
 }
 
 function currentModelPayload() {
@@ -641,6 +711,7 @@ function currentModelPayload() {
     temperature: parseFloat($('#mTemp').value) || 0.8,
     max_tokens: parseInt($('#mMaxTokens').value, 10) || 1200,
     thinking_level: $('#mThinkLevel').value || '',
+    thinking_off_mode: $('#mOffMode') ? ($('#mOffMode').value || '') : '',
     enabled: $('#mEnabled').checked,
   };
   if (id) p.id = id;
@@ -682,8 +753,11 @@ function bind() {
     if (p.base_url) $('#mBaseUrl').value = p.base_url;
     $('#mModelOptions').innerHTML = modelListNotice($('#mProvider').value);
     renderThinkNotice();
+    refreshOffPlan();   // 换了网关，关法跟着变
   });
   $('#mThinkLevel').addEventListener('change', renderThinkNotice);
+  $('#mOffMode').addEventListener('change', () => refreshOffPlan());
+  $('#mModel').addEventListener('input', () => refreshOffPlan());
   $('#btnProbe').addEventListener('click', async () => {
     const p = currentModelPayload();
     const out = $('#mProbeResult');

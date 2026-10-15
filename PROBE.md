@@ -154,3 +154,69 @@ glm-5.1  glm-5.2  glm-5.3  glm-5.3-flash  glm-5.3-flashx
 - **多厂商真实互怼仍没跑过**：各家单条都能调通，但**没在一个房间里同时发言过**。
 - TokenHub 官方称"混元 Lite 长期免费"，但当前 117 条模型列表里**找不到 `hunyuan-lite` / `hy-lite` 这个 ID**，
   需去控制台确认现在的名字。
+
+## 三、「关闭深度思考」逐模型实测（2026-10-15）
+
+复现：`python tools/_probe_thinking_off.py`（14 个目标 × 5 个候选字段，结果落
+`tools/_thinking_off_result.json`）；只想看当前判定：`python tools/_check_off_plan.py`（不发请求）。
+**为什么按模型做**：百炼同时挂 Qwen / DeepSeek / GLM / Kimi，TokenHub 同时挂混元 / GLM / DeepSeek /
+Kimi / MiniMax —— 同一个网关里 DeepSeek 关得掉、GLM-5.3 关不掉。
+
+| 网关 | 模型 | 基线思考 | `thinking.type=disabled` | `enable_thinking=false` | `reasoning_effort=none` |
+|---|---|---|---|---|---|
+| 方舟 | doubao-seed-2-1-pro-260915 | 318 字 / **156.6s** | **✅ 0 / 7.5s** | ✗ 505 | ✅ 0 / 2.0s |
+| 百炼 | qwen3.8-flash | 77 | ✅ 0 | ✅ 0 | ✅ 0 |
+| 百炼 | deepseek-v4.1-flash | 323 | ✅ 0 | ✅ 0 | ✅ 0 |
+| 百炼 | glm-5.3 | 988 | **400 restricted** | **400** | **400** |
+| 百炼 | kimi-k2.6 | 0（默认不思考） | — | — | — |
+| TokenHub | hy4-preview | 413 | ✅ 0 | ✗ 521 | ✅ 0 |
+| TokenHub | kimi-k3 | 1070 | ✅ 0 | ✗ 1146 | ✅ 0 |
+| TokenHub | deepseek-v4-flash | 283 | ✅ 0 | ✗ 231 | ✅ 0 |
+| TokenHub | minimax-m3 | 0（自适应） | — | — | — |
+| TokenHub | kimi-k2.6 | （400001 基线就失败，无法判定） | — | — | — |
+| 智谱 | glm-4.5-flash | 255 | **✅ 0 / 1.1s** | ✗ 418 | ✗ 292 |
+| 智谱 | glm-4.7-flash | 427 | 429 限流挡住 | **✅ 0** | ✗ 434 |
+| 智谱 | glm-5.3-flash | 1039 | **400「始终思考」** | **400** | **400** |
+| DeepSeek 官方 | deepseek-chat | — | 402 余额不足（无法验证） | 402 | 402 |
+
+**结论**
+
+- **`thinking.type=disabled` 是跨家事实标准**：方舟、TokenHub、智谱、百炼（连文档没写它也认）都吃这一套。
+- 反例：方舟 / TokenHub **完全不认 `enable_thinking`**（发了思考照旧）；百炼两个都认，但它文档给的是
+  `enable_thinking`，所以走百炼时优先发它。
+- `reasoning_effort=none` 在方舟 / TokenHub / 百炼也等于「关思考」，但**智谱不认**（只压轻微）。
+- **关不掉的是"强制思考"型号**：GLM-5.3 全系（智谱与百炼都 400）；`-thinking` / `deepseek-r1` /
+  `qwq` / `minimax-m2.5` / `minimax-m2.7` / `kimi-k2.7-code` 按厂商文档也不支持。
+- ⚠️ **`thinking_budget` 不是开关**：在方舟 / 腾讯 / 智谱发 `thinking_budget=1`，思考量照旧
+  （490 / 1065 / 441），只是被截断。
+- ⚠️ **文档会骗人**：TokenHub 官方表格写 Kimi-K3「不支持关闭」，实测能关；
+  而「智谱不认 thinking 字段、关不掉」是我们自己早先拿 GLM-5.3-flash 试出来的**错误推广**。
+- ⚠️ **档位参数（level）也有雷**：腾讯 `hy4-preview` 发 `max` 直接 **400**（官方只给 high/none），
+  `low`/`high` 都压不下来；kimi-k3 的 `low` 有效（978→34）；方舟 `low` 只小幅降档（1171→718）。
+
+### 3.1 新增模型时怎么判（第 16 批·A 方案）
+
+上面这套判定是「**模型家族 × 托管网关**」的宽匹配 —— 新模型只要家族认得出来就免配置。
+但宽匹配有个洞：**挡不住同族里新出的强制思考型号**（假想的 `glm-5.4` 家族命中 `glm`，
+会被判「实测可关」→ 硬发 → 400）。所以加了**家族级风险旗标**：
+
+| 风险家族（`THINKOFF_FAMILY_RISK`） | 为什么标风险 | 已核对、照发关闭字段的型号 |
+|---|---|---|
+| 智谱 + glm | GLM-5.3 强制思考（实测 400）；GLM-4 系列不支持 thinking 参数 | `glm-4.5*` / `glm-4.7*` |
+| 腾讯 + kimi | Kimi-K2.7-Code 官方标注「不支持关闭」 | `kimi-k3` |
+| 百炼 + deepseek | DeepSeek-R1 系列是纯推理模型 | `deepseek-v4.1-flash` |
+| 官方 + deepseek | 同上 | `deepseek-chat` / `deepseek-v3*` / `deepseek-v4*` |
+
+规则：**风险家族里没点名核对过的型号 → 一律「未核实 → 什么都不发」**（界面上说明原因并指路手动指定）；
+非风险家族（方舟 doubao、百炼 qwen、腾讯 hy*）**仍然免配置直接生效**。
+
+预演命令（不起服务、不耗额度）：
+
+```
+python tools/_check_off_plan.py                                  # 模型库现状
+python tools/_check_off_plan.py --model zhipu:glm-5.4 --model dashscope:qwen3.9-flash
+```
+
+实测过的几种情形：`glm-5.4` → ❔ 不发（拦住）；`glm-4.7-air` → ✅ 发；
+`qwen3.9-flash` / `doubao-seed-3-0-pro` → ✅ 发（免配置）；`ark + grok-4`、新网关 → ❔ 不发。
+

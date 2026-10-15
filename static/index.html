@@ -98,9 +98,9 @@
         <span class="group" title="开启后模型会依次各发言一次；关闭后只能点某位参与者的「发言」单独请他开口。">
           <label class="chk"><input id="autoSpeak" type="checkbox" checked>自动轮流</label>
         </span>
-        <span class="group owner-only" title="轮内间隔：上一位说完到下一位开口之间等待的秒数（最少 3 秒，最多 60 秒）。等待期间可以直接点「停止」打断，或点名让别人接着说。">
+        <span class="group owner-only" title="轮内间隔：上一位说完到下一位开口之间等待的秒数（最少 0.5 秒，最多 60 秒）。等待期间可以直接点「停止」打断，或点名让别人接着说。">
           <label>间隔</label>
-          <input id="gapInput" type="number" min="3" max="60" step="1" value="3">
+          <input id="gapInput" type="number" min="0.5" max="60" step="0.5" value="3">
           <label>秒</label>
         </span>
         <span class="group owner-only">

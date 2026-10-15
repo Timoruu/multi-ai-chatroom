@@ -297,8 +297,8 @@ check(html.includes('自动轮流') && !html.includes('先在上面输入一个�
 /* ---- A5) 轮内间隔与发言顺序 */
 
 check(html.includes('id="gapInput"'), 'index.html 控制条应有「间隔（秒）」输入框');
-check(/id="gapInput"[^>]*min="3"/.test(html) && /id="gapInput"[^>]*max="60"/.test(html),
-  '间隔输入框范围应是 3~60 秒（下限 3 秒是用户硬要求）');
+check(/id="gapInput"[^>]*min="0\.5"/.test(html) && /id="gapInput"[^>]*max="60"/.test(html),
+  '间隔输入框范围应是 0.5~60 秒（下限 2026-10-15 由 3 秒放开到 0.5 秒）');
 check(appjs.includes('function setGap') && appjs.includes('function gapSeconds'),
   'app.js 应有 setGap / gapSeconds');
 check(appjs.includes("gapInput').addEventListener('change'"),
@@ -306,10 +306,12 @@ check(appjs.includes("gapInput').addEventListener('change'"),
 check(appjs.includes("case 'gap'") && appjs.includes("case 'gap_end'"),
   'app.js 应处理服务端 gap / gap_end 事件（否则看不到倒计时）');
 check(typeof (cfg.rooms[0].debate || {}).auto_speak_gap_ms === 'number'
-  && cfg.rooms[0].debate.auto_speak_gap_ms >= 3000,
-  '默认房间应显式配置 auto_speak_gap_ms 且不低于 3000');
+  && cfg.rooms[0].debate.auto_speak_gap_ms >= 500,
+  '默认房间应显式配置 auto_speak_gap_ms 且不低于 500（下限 2026-10-15 由 3000 放开）');
 check(orchpy.includes('MIN_GAP_MS') && orchpy.includes('MAX_GAP_MS'),
   'orchestrator 应有间隔上下限常量（防止被配成 0 秒）');
+check(/MIN_GAP_MS\s*=\s*500\b/.test(orchpy),
+  'orchestrator.MIN_GAP_MS 应为 500（0.5 秒下限，2026-10-15 放开）');
 check(/def gap_ms\(/.test(orchpy) && orchpy.includes("debate.get('auto_speak_gap_ms')"),
   'orchestrator 应从房间 debate.auto_speak_gap_ms 读间隔');
 check(orchpy.includes('_gap_pause'), 'orchestrator 应有换人间隔等待逻辑');
@@ -1032,13 +1034,82 @@ check(adminHtml.includes('id="dlgModel"') && adminHtml.includes('id="mThinkLevel
   'admin.html 应保留模型编辑弹窗（含思考档位与方言提示）');
 check(adminHtml.includes('id="dlgRoleEdit"') && adminHtml.includes('id="rGroup"'),
   'admin.html 应有角色编辑弹窗（名称 / 分组 / 提示词）');
-check(adminHtml.includes('value="low"') && adminHtml.includes('value="high"') && adminHtml.includes('value="max"'),
-  '档位下拉应有 low / high / max 三个选项');
+check(adminHtml.includes('value="off"') && adminHtml.includes('value="low"')
+  && adminHtml.includes('value="high"') && adminHtml.includes('value="max"'),
+  '档位下拉应有 off / low / high / max 四个选项（off＝彻底关思考，2026-10-15 新增）');
+/* 2026-10-15 第十四批改断言：判定从「厂商级 off_supported」挪到了「模型级 off_plan」——
+   同一个网关下 DeepSeek 关得掉、GLM-5.3 关不掉，厂商级那个布尔值已经不够用了。
+   ⚠️ 红的是断言不是代码，改断言时锁的仍然是「关不掉必须明说」这个意图。 */
+check(adminjs.includes('这一个关不掉') && adminjs.includes('plan.supported === false'),
+  'admin.js 必须明确提示「这一个关不掉」（模型级判定，且要用 warn 样式）');
+check(adminjs.includes('plan.note'),
+  'admin.js 的判定说明要显示后端给的依据（不许自己编套话）');
 check(adminHtml.includes('id="mThinkLevel"') && adminHtml.includes('思考档位'),
   'admin.html 模型弹窗应有「思考档位」下拉');
 check(!adminHtml.includes('部分厂商可点右侧拉取'),
   '模型 ID 的提示语应更新（实测各家都提供列表接口）');
 check(adminHtml.includes('/static/admin.js'), 'admin.html 应引用 admin.js');
+
+/* ---- B6b) 参数说明气泡（2026-10-15 第十三批：用户要求「悬停显示参数说明」）---- */
+/* 用户原话：「模型相关的参数加一些说明，防止别人看不懂，比如 temperature 和 max_tokens 参数，
+   鼠标悬停到参数位置时显示参数说明」。做法：label 里加 `<span class="help" data-tip="…">?</span>`，
+   纯 CSS 靠 `content: attr(data-tip)` 弹出气泡 —— 所以这里同时锁 HTML 与 CSS 两头，
+   少一头气泡就是空的（而且不报错，很难发现）。 */
+const helpTips = adminHtml.match(/class="help[^"]*"[^>]*data-tip="[^"]{30,}"/g) || [];
+check(helpTips.length >= 5,
+  `管理页参数说明气泡应至少 5 个（实际 ${helpTips.length} 个：base_url / 模型 ID / 显示名 / temperature / max_tokens / 思考档位）`);
+check( adminHtml.includes('temperature <span class="help"'),
+  'temperature 必须有悬停说明');
+check(adminHtml.includes('max_tokens <span class="help help-l"'),
+  'max_tokens 的气泡必须向左展开（.help-l，右半栏往右弹会伸出弹窗）');
+check(adminHtml.includes('tabindex="0"') && adminHtml.includes('aria-label="查看'),
+  '参数说明气泡要能用键盘聚焦（tabindex + aria-label），不能只支持鼠标');
+check(/\.help\s*\{[\s\S]*?\}/.test(css) && css.includes('.help::after')
+  && css.includes('content: attr(data-tip)'),
+  'style.css 必须定义 .help 与 .help::after{content:attr(data-tip)}（否则气泡是空的）');
+check(/\.help:hover::after/.test(css) || /\.help:focus-visible::after/.test(css),
+  'style.css 应有悬停/聚焦时显示气泡的规则');
+check(!/data-tip="[^"]*"[^>]*data-tip=/.test(adminHtml),
+  '同一个 .help 不该写两个 data-tip');
+
+/* ---- B6c) 弹窗横向滚动条（2026-10-15 第十三批，用户截图报的）---- */
+/* 用户原话：「模型编辑窗口，下面不要这个滑杆，内容展示不下的话，窗口可以宽一点」。
+   真因：气泡隐藏用的是 visibility:hidden —— **隐藏元素照样占布局**，272px 宽的气泡
+   伸出 <dialog> 右缘，而 <dialog> 默认 overflow:auto → 凭空一条横向滚动条。
+   修法 = 隐藏改 display:none（不参与布局）+ 模型弹窗单独加宽到 640。两头都要锁死：
+   改回 visibility/opacity 的话滚动条会无声地回来，而且只有真开浏览器才看得见。 */
+check(/\.help::after\s*\{[^}]*display:\s*none/.test(css),
+  '气泡隐藏必须是 display:none（visibility:hidden 会占布局、把 dialog 撑出横向滚动条）');
+check(!/\.help::after\s*\{[^}]*visibility:\s*hidden/.test(css),
+  '气泡不许再用 visibility:hidden 隐藏（就是它造成横向滑杆的）');
+check(css.includes('help-l') && /help-l::after\s*\{[^}]*right:\s*-6px/.test(css.replace(/\n/g, ' ')),
+  'style.css 应有 .help-l（向左展开的气泡变体）');
+check(/#dlgModel\s*\{[^}]*max-width:\s*640px/.test(css.replace(/\n/g, ' ')),
+  '模型编辑弹窗应单独加宽到 640px（其他弹窗维持原宽）');
+
+/* ---- B6c) off 关法（2026-10-15 第十四批：关思考按**模型**判，不再按厂商一刀切）---- */
+/* 用户原话：「再去核实一下，各个厂商的参数，是否有关闭深度思考的开关，然后更新我们的模型库。
+   但是需要注意一点，有的厂商会提供多家的模型，比如百炼除了有自身的千文模型，也同时提供
+   deepseek 模型」—— 所以判定必须是「模型家族 × 托管厂商」，前端不复制规则。 */
+check(adminHtml.includes('id="mOffMode"') && adminHtml.includes('id="mOffNotice"'),
+  'admin.html 应有「off 关法」下拉框与判定提示行');
+check(adminHtml.includes('off 关法 <span class="help"'),
+  '「off 关法」也要有悬停说明（用户要求参数都要能看懂）');
+check(adminjs.includes('/api/thinking_off'),
+  'admin.js 要向 /api/thinking_off 查询判定（规则只在后端留一份）');
+check(!/OFF_MEASURED|OFF_IMPOSSIBLE|OFF_MOOT|HOST_OFF_BODY/.test(adminjs),
+  '前端不该复制后端的关法判定表（两处规则会打架）');
+check(adminjs.includes("$('#mModel').addEventListener('input'"),
+  '模型 ID 一变就要重新判定关法（同一家网关下能关和关不掉都有）');
+check(adminjs.includes('thinking_off_mode:'),
+  '保存模型时要带上 off 关法字段');
+check(adminjs.includes('off_plan') || adminjs.includes('offChip'),
+  '模型卡片要显示「可关思考 / 思考关不掉」角标');
+check(/\.tag-ok\s*\{[^}]*\}/.test(css) && css.includes('var(--ok)'),
+  'style.css 应有 .tag-ok 角标样式（可关思考，和「未核实」的 warn 角标并列）');
+check(/\.field\s+\.tip\.tip-warn\s*\{/.test(css.replace(/\n/g, ' ')),
+  '关不掉的提示要用 .field .tip.tip-warn（只写 .tip-warn 优先级不够、不生效）');
+
 
 /* ---- B7b) 管理页排版：左侧分区导航 + 右侧单块面板（2026-10-15 用户要求）---- */
 /* 用户原话：「admin后台重新设计下排版，规则库，角色库，模型库，厂家/API key 库，

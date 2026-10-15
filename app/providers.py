@@ -19,8 +19,8 @@ RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 REASONING_KEYS = ('reasoning_content', 'reasoning', 'thinking', 'reasoning_text')
 
 # ---------------------------------------------------------------- 思考档位
-# 模型库里的「思考档位」统一命名（low / high / max，界面只给这三个），但各家接收它的
-# 参数名与语义并不一致 —— 下面这张表就是「按各家的要求翻译」。
+# 模型库里的「思考档位」统一命名（off / low / high / max，界面给这四档），但各家接收它的
+# 参数名与语义并不一致 —— 下面这两张表就是「按各家的要求翻译」。
 # 原始探测见 2026-10-13 逐家实测（19 次探测 + 5 次复测，数据见项目 MEMORY.md）。
 #
 # ⚠️ 2026-10-13 二次复核更正：**免费线路的思考量本身抖动很大**（同一模型同一天多次请求，
@@ -29,29 +29,263 @@ REASONING_KEYS = ('reasoning_content', 'reasoning', 'thinking', 'reasoning_text'
 #    抖动明显的会在 note 里直接说明。前端另有一条统一提示（见 static/app.js）提醒这一点。
 # 值 = (写进请求体的参数名, 该家实测行为)；备注随 /api/state 送到前端，
 # 显示在档位下拉框下面，免得用户靠猜。
-REASONING_LEVELS = ('low', 'high', 'max')
+REASONING_LEVELS = ('off', 'low', 'high', 'max')
 DEFAULT_REASONING_PARAM = 'reasoning_effort'
 REASONING_DIALECT = {
     'zhipu': ('reasoning_effort',
-              '参数能原样发出，但这一家实测抖动最大：同一天里 low 的思考量在 0～250 之间跳'
-              '（免费线路路由所致），压不压得住看运气；它也不认 thinking 字段。'),
+              '只有 GLM-5.2 及以上认这个档位参数；GLM-4.7 及以下别指望它调档，'
+              '要快就用 off 关思考。免费线路抖动大（同一天里 low 的思考量在 0～250 之间跳）。'),
     'ark': ('reasoning_effort',
-            'low 实测把思考从 1053 降到 384；想彻底关掉要用 thinking.type=disabled。'),
+            'low 实测把思考从 1053 降到 384；要彻底关掉就选 off（2026-10-15 实测 156.6s → 7.5s）。'),
     'dashscope': ('reasoning_effort',
-                  'low 只轻微降档；Qwen 想彻底关掉要用 enable_thinking=false。'),
+                  '同一个参数在不同模型上取值不一样（GLM-5.3 只认 low/high/max；'
+                  'deepseek-v4.1-flash 认 minimal～max）。'),
     'hunyuan': ('reasoning_effort',
-                'kimi-k3 的 low 有效（思考 453→61）；hy4-preview 的 low 实测无效。'),
+                '按模型分档（腾讯 TokenHub，2026-10-15 实测）：hy4-preview 只认 high/none，'
+                '⚠️ 选 max 会直接 400、low/high 都压不下来（那种情况请用 off）；'
+                'kimi-k3 的 low 有效（思考 978→34）；deepseek-v4-flash 给 low/high/max。'),
     'deepseek': ('reasoning_effort',
-                 '实测该参数被无视，选档位对它没有影响。'),
+                 '文档支持 low/high/max（none＝关思考、默认 high）；本机 Key 余额为 0（402）没能实测。'),
 }
 
+# ---------------------------------------------------------------- 关思考（off 档）
+# 用户 2026-10-15 点出的关键事实：**同一家网关底下挂着别家的模型是常态** ——
+#   百炼挂 Qwen / DeepSeek / GLM / Kimi；TokenHub 挂混元 / GLM / DeepSeek / Kimi / MiniMax。
+# 而「关思考」的开关归**模型**管，不归网关管：同一个 TokenHub 里 DeepSeek 关得掉、
+# Kimi-K3 关得掉，GLM-5.3 却关不掉。所以下面这套规则是
+# **按「模型家族 × 托管厂商」判定**的，不再按厂商一刀切。
+#
+# 复现：tools/_probe_thinking_off.py（逐模型 × 逐候选字段实测）→ tools/_thinking_off_result.json
+#
+# ⚠️ 两条写死的教训：
+# 1. **关不掉的模型千万别硬发关闭字段** —— 智谱 GLM-5.3 收到 thinking.type=disabled 直接回
+#    400「该模型始终思考，不支持关闭思考」，百炼上的 GLM-5.3 回 400 restricted。硬发＝把本来
+#    能用的调用打成报错。所以我们宁可**什么都不发**，并在界面上把原因说明白。
+# 2. 绝不能把字符串 'off' 当档位值发出去（没有任何厂商认这个值）。
+# 3. **一族里出过关不掉的型号，就把这一族的"新型号"一律降级为「未核实」**（见
+#    THINKOFF_FAMILY_RISK / OFF_VERIFIED_MODELS）—— 家族级宽匹配能白捡"新模型免配置"的便利，
+#    但它挡不住下一个 glm-5.4 被硬发打成 400，所以风险族只认点名核对过的型号。
+MODEL_FAMILY_PREFIXES = (
+    ('chatglm', 'glm'), ('glm', 'glm'),
+    ('qwen', 'qwen'), ('qwq', 'qwen'),
+    ('deepseek', 'deepseek'),
+    ('doubao', 'doubao'), ('seed', 'doubao'),
+    ('kimi', 'kimi'), ('moonshot', 'kimi'),
+    ('minimax', 'minimax'), ('abab', 'minimax'),
+    ('hunyuan', 'hunyuan'), ('hy', 'hunyuan'),
+    ('ernie', 'ernie'),
+)
 
-def reasoning_dialect(provider: str) -> dict:
-    """给前端用的档位方言说明：参数名 + 实测备注 + 是否实测过。"""
+
+def model_family(model: str) -> str:
+    """从模型 ID 前缀认家族（认不出来返回空串）。"""
+    mid = (model or '').strip().lower()
+    for prefix, fam in MODEL_FAMILY_PREFIXES:
+        if mid.startswith(prefix):
+            return fam
+    return ''
+
+
+# 网关「关法」偏好：意思一样、形状各家不同，优先用该网关**官方文档写明**的那个字段。
+# 2026-10-15 实测：ark / TokenHub 只认 thinking.type —— 给它们发 enable_thinking 完全被无视
+# （doubao 思考 505、kimi-k3 思考 1146，照旧思考）；百炼两个都认，但它文档给的是
+# enable_thinking，所以优先发它。
+HOST_OFF_BODY = {
+    'ark': {'thinking': {'type': 'disabled'}},
+    'hunyuan': {'thinking': {'type': 'disabled'}},   # 腾讯 TokenHub
+    'zhipu': {'thinking': {'type': 'disabled'}},
+    'deepseek': {'thinking': {'type': 'disabled'}},
+    'dashscope': {'enable_thinking': False},
+}
+
+# 实测确认「off 真能把思考压到 0」的 (网关, 家族) —— 括号里是原始数字。
+OFF_MEASURED = {
+    ('ark', 'doubao'): 'doubao-seed-2-1-pro-260915：思考 1118 tokens / 156.6s → 0 / 7.5s',
+    ('hunyuan', 'hunyuan'): 'hy4-preview：思考 208 tokens → 0，8.5s → 2.4s',
+    ('hunyuan', 'kimi'): 'kimi-k3：思考 256 tokens → 0（官方文档说这一家关不掉，实测能关）',
+    ('hunyuan', 'deepseek'): 'deepseek-v4-flash：思考 77 tokens → 0',
+    ('dashscope', 'qwen'): 'qwen3.8-flash：思考 42 tokens → 0',
+    ('dashscope', 'deepseek'): 'deepseek-v4.1-flash：思考 180 tokens → 0',
+    ('zhipu', 'glm'): 'GLM-4.5-flash（thinking.type）/ GLM-4.7-flash（enable_thinking）：思考归零',
+}
+
+# 🔴 家族级「风险旗标」（2026-10-15 用户选 A 方案）。
+# 上面 OFF_MEASURED 是**家族级**结论：只要家族和网关对上就发。好处是新模型免配置，
+# 坏处是**挡不住同族里那些"关不掉"的型号**——GLM-5.3 就是活例子（实测回 400「该模型始终思考」）。
+# 所以：凡是**族里出过关不掉型号**的家族，同族新型号一律**降级为「未核实」→ 什么都不发**，
+# 只有下面 OFF_VERIFIED_MODELS 里**点名核对过**的型号才照发。
+# 代价：这几个家族以后加新模型要多点一次「off 关法」下拉；换来的是不会把能用的调用打成 400。
+THINKOFF_FAMILY_RISK = {
+    ('zhipu', 'glm'): 'GLM-5.3 强制思考（实测回 400），GLM-4 系列也不支持 thinking 参数',
+    ('hunyuan', 'kimi'): 'Kimi-K2.7-Code 官方标注「不支持关闭」',
+    ('dashscope', 'deepseek'): 'DeepSeek-R1 系列是纯推理模型，不支持关闭思考',
+    ('deepseek', 'deepseek'): 'DeepSeek-R1 系列是纯推理模型，不支持关闭思考',
+}
+
+# 风险家族里**点名核对过**的型号白名单：(网关, 家族) -> (型号片段, 依据等级, 证据)。
+# 命中片段才发关闭字段；没命中的同名家族新型号一律不发，等人工确认。
+# 片段按普通子串匹配（大小写已归一），所以 'glm-4.7' 能覆盖 glm-4.7-flash / glm-4.7-air。
+OFF_VERIFIED_MODELS = {
+    ('zhipu', 'glm'): (
+        ('glm-4.5', 'glm-4.7'), '实测',
+        'GLM-4.5-flash（thinking.type）/ GLM-4.7-flash（enable_thinking）本机实测思考归零',
+    ),
+    ('hunyuan', 'kimi'): (
+        ('kimi-k3',), '实测', 'kimi-k3 本机实测思考 256 → 0（官方文档说关不掉，实测能关）',
+    ),
+    ('dashscope', 'deepseek'): (
+        ('deepseek-v4.1-flash',), '实测', 'deepseek-v4.1-flash 本机实测思考 180 → 0',
+    ),
+    ('deepseek', 'deepseek'): (
+        ('deepseek-chat', 'deepseek-v3', 'deepseek-v4'), '厂商文档',
+        'DeepSeek 官方文档写明 thinking.type=disabled 可关；本机 Key 余额 0（402）没能实测',
+    ),
+}
+
+# 文档写明支持、但本机没能实测的组合 —— 照样发，但界面要说清「依据是文档、不是实测」。
+OFF_DOC_ONLY = {
+    ('deepseek', 'deepseek'): 'DeepSeek 官方文档写明 thinking.type=disabled 可关；本机 Key 余额为 0（402），没能实测。',
+    ('dashscope', 'glm'): '百炼文档写明 enable_thinking 适用 GLM 系列（GLM-5.3 系列除外）；本机未单独实测。',
+    ('hunyuan', 'glm'): 'TokenHub 文档写明 GLM 系列（GLM-5.3 系列除外）可关；本机未单独实测。',
+    ('hunyuan', 'qwen'): 'TokenHub 文档写明 qwen3.5 系列可关；本机未单独实测。',
+}
+
+# 关不掉的模型（按 model ID 片段匹配，先命中先算）—— 价值是**避免把能用的调用打成 400**。
+OFF_IMPOSSIBLE = (
+    ('glm-5.3', '强制思考模型：智谱官方直接回 400「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」，'
+                '百炼上同一模型回 400 restricted。', '实测'),
+    ('glm-4-', 'GLM-4 系列不支持 thinking 参数（官方：仅 GLM-4.5 及以上支持），发过去会被拒。', '厂商文档'),
+    ('-thinking', '带 -thinking 后缀的是「仅思考」模型，官方说明无法关闭思考。', '厂商文档'),
+    ('deepseek-r1', 'R1 系列是纯推理模型，官方说明不支持关闭思考。', '厂商文档'),
+    ('qwq', 'qwq 系列是纯推理模型，官方说明不支持关闭思考。', '厂商文档'),
+    ('minimax-m2.5', 'MiniMax-M2.5 官方标注「不支持关闭」。', '厂商文档'),
+    ('minimax-m2.7', 'MiniMax-M2.7 官方标注「不支持关闭」。', '厂商文档'),
+    ('kimi-k2.7-code', 'Kimi-K2.7-Code 官方标注「不支持关闭」。', '厂商文档'),
+)
+
+# 默认就不思考 / 自适应思考的模型：off 档无害，但也提不了速 —— 界面要说清楚，
+# 免得用户「关了半天没变快」以为是没生效。
+OFF_MOOT = (
+    ('minimax-m3', 'MiniMax-M3 是自适应思考：这种简单问题本来就不思考，关了也不会更快。'),
+)
+
+
+def _off_wire(body: dict) -> str:
+    """把关法体渲染成人话给提示语用，如 thinking.type=disabled / enable_thinking=False。"""
+    for k, v in (body or {}).items():
+        if isinstance(v, dict):
+            for k2, v2 in v.items():
+                return f'{k}.{k2}={v2}'
+        return f'{k}={v}'
+    return ''
+
+
+def thinking_off_plan(provider: str, model: str = '') -> dict:
+    """「这一个模型能不能关思考、怎么关、凭什么这么说」。
+
+    supported: True=关得掉 / False=关不掉 / None=这个组合没核实过（一律不发，免得出 400）
+    body:      真要并进请求体的字段；supported 不为 True 时是空 dict
+    source:    '实测' / '厂商文档' / '未知'
+    """
+    pid = (provider or '').strip()
+    mid = (model or '').strip().lower()
+    fam = model_family(mid)
+    out = {'family': fam, 'host': pid, 'supported': None, 'body': {},
+           'source': '未知', 'note': ''}
+    if not mid:
+        out['note'] = ('还没填模型 ID —— 关法要按**具体模型**判（同一个网关下 DeepSeek 关得掉、'
+                       'GLM-5.3 关不掉），填好才能告诉你这一个。')
+        return out
+    for frag, why, src in OFF_IMPOSSIBLE:
+        if frag in mid:
+            out.update(supported=False, source=src, note=f'关不掉：{why}')
+            return out
+    body = HOST_OFF_BODY.get(pid)
+    if not body:
+        out['note'] = (f'网关「{pid or "未指定"}」没有核实过的关法，off 档不会发任何参数'
+                       f'（硬发可能被拒，把本来能用的调用打成报错）。')
+        return out
+    wire = _off_wire(body)
+    for frag, why in OFF_MOOT:
+        if frag in mid:
+            out.update(supported=True, body=dict(body), source='实测',
+                       note=f'off 档会发 {wire}；不过{why}')
+            return out
+    key = (pid, fam)
+    # 风险家族先拦一道：族里出过关不掉的型号 → 同族新型号只认「点名核对过」的白名单，
+    # 没点名的一律不发（宁可不变快，也不能被厂商回 400 把能用的调用打坏）。
+    risk = THINKOFF_FAMILY_RISK.get(key)
+    if risk:
+        frags, src, evidence = OFF_VERIFIED_MODELS.get(key, ((), '未知', ''))
+        if any(f in mid for f in frags):
+            out.update(supported=True, body=dict(body), source=src,
+                       note=f'off 档会发 {wire}：{evidence}。')
+        else:
+            out['note'] = (f'「{mid}」这一族里出过关不掉的型号（{risk}），所以同族新型号不敢按家族直接关 —— '
+                           f'off 档不会发任何参数。确认这一个能关，就在下面「off 关法」里手动指定。')
+        return out
+    if key in OFF_MEASURED:
+        out.update(supported=True, body=dict(body), source='实测',
+                   note=f'off 档会发 {wire}，本机实测能把思考压到 0：{OFF_MEASURED[key]}。')
+    elif key in OFF_DOC_ONLY:
+        out.update(supported=True, body=dict(body), source='厂商文档',
+                   note=f'off 档会发 {wire}。{OFF_DOC_ONLY[key]}')
+    else:
+        out['note'] = (f'「{pid} + {mid}」这个组合没核实过，off 档不会发任何参数 —— '
+                       f'想试就在下面「off 关法」里手动指定一种。')
+    return out
+
+
+# 页面上「off 关法」下拉框的选项（手写覆盖自动判定，给未核实的组合留出口子）。
+OFF_MODE_OPTIONS = (
+    ('', '自动（按上面的实测表）'),
+    ('thinking', '强制发 thinking.type=disabled'),
+    ('enable_thinking', '强制发 enable_thinking=false'),
+    ('reasoning_effort_none', '强制发 reasoning_effort=none'),
+    ('none', '不发（保持默认）'),
+)
+OFF_MODE_BODIES = {
+    'thinking': {'thinking': {'type': 'disabled'}},
+    'enable_thinking': {'enable_thinking': False},
+    'reasoning_effort_none': {'reasoning_effort': 'none'},
+}
+
+# ⚠️ 实测「thinking_budget 不靠谱」：在 ark / 腾讯 / 智谱 上发 thinking_budget=1，思考量照旧
+#    （doubao 490、kimi-k3 1065、glm-4.7 441），只是把思考截断。所以它没进 OFF_MODE_BODIES。
+
+
+def resolve_off_body(provider: str, model: str, mode: str = '') -> dict:
+    """按「off 关法」设置解析真正要发的字段。mode 见 OFF_MODE_OPTIONS。"""
+    m = (mode or '').strip()
+    if m in OFF_MODE_BODIES:
+        return dict(OFF_MODE_BODIES[m])
+    if m == 'none':
+        return {}
+    plan = thinking_off_plan(provider, model)
+    return dict(plan.get('body') or {})
+
+
+def reasoning_dialect(provider: str, model: str = '') -> dict:
+    """给前端用的档位方言说明。
+
+    传了 model 就按**这个模型**判能不能关思考；不传则是「本家网关的通用情况」。
+    """
+    pid = provider or ''
     name, note = REASONING_DIALECT.get(
-        provider or '', (DEFAULT_REASONING_PARAM, '未实测该厂商，按通用 reasoning_effort 发送。'))
-    return {'param': name, 'levels': list(REASONING_LEVELS), 'note': note,
-            'tested': (provider or '') in REASONING_DIALECT}
+        pid, (DEFAULT_REASONING_PARAM, '未实测该厂商，按通用 reasoning_effort 发送。'))
+    body = HOST_OFF_BODY.get(pid)
+    out = {'param': name, 'levels': list(REASONING_LEVELS), 'note': note,
+           'tested': pid in REASONING_DIALECT,
+           'off_supported': bool(body),
+           'off_note': (f'本家网关的关法：{_off_wire(body)}；具体发不发由模型决定。'
+                        if body else
+                        '这一家没有核实过的关法，off 档不会发任何参数。')}
+    if model:
+        plan = thinking_off_plan(pid, model)
+        out['off_plan'] = plan
+        out['off_supported'] = plan['supported'] is True
+        out['off_note'] = plan['note']
+    return out
 
 
 class ProviderError(Exception):
@@ -87,11 +321,19 @@ def build_payload(cfg: dict, messages: list, stream: bool = True) -> dict:
         payload['temperature'] = cfg['temperature']
     if cfg.get('max_tokens'):
         payload['max_tokens'] = int(cfg['max_tokens'])
-    # 思考档位：界面统一 low/high/max，这里按厂商换成本家认的参数名（见 REASONING_DIALECT）。
+    # 思考档位：界面统一 off/low/high/max，这里按厂商换成本家认的参数名（见 REASONING_DIALECT）。
+    # ⚠️ off 是特例：绝不能把字符串 'off' 当档位值发出去（没有任何厂商认这个值），要走
+    #    resolve_off_body() —— 它按「模型家族 × 托管厂商」查实测表，查不到就**什么都不发**
+    #    （硬发可能被拒，把本来能用的调用打成 400）。页面上的「off 关法」可手动覆盖。
     level = str(cfg.get('thinking_level') or '').strip().lower()
-    if level in REASONING_LEVELS:
-        payload[REASONING_DIALECT.get(cfg.get('provider') or '',
-                                      (DEFAULT_REASONING_PARAM, ''))[0]] = level
+    provider = cfg.get('provider') or ''
+    if level == 'off':
+        off_body = resolve_off_body(provider, cfg.get('model') or '',
+                                    cfg.get('thinking_off_mode') or '')
+        if off_body:
+            payload.update(off_body)
+    elif level in REASONING_LEVELS:
+        payload[REASONING_DIALECT.get(provider, (DEFAULT_REASONING_PARAM, ''))[0]] = level
     # extra_body 放最后：手写的额外参数优先级最高，可覆盖上面的档位。
     extra = cfg.get('extra_body')
     if isinstance(extra, dict):

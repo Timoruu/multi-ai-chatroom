@@ -13,8 +13,8 @@
   （这就是「指定某个模型继续发言」）；@某人则让他排在本轮第一位。
 - **顺序 = 房间 participants 数组的顺序**（config.json 里手写的顺序，页面右栏「本房间参与者」
   列表从上到下就是这个顺序）。@点名只把他挪到本轮第一个，其余人相对顺序不变。
-- **轮内间隔**：换人间隔默认 3 秒（`rooms[].debate.auto_speak_gap_ms`，下限 3 秒 / 上限 60 秒），
-  一次提交里有 2 位以上发言人才生效。倒计时期间可以直接打断或点名。
+- **轮内间隔**：换人间隔默认 3 秒（`rooms[].debate.auto_speak_gap_ms`，下限 0.5 秒 / 上限 60 秒；
+  下限 2026-10-15 由 3 秒放宽到 0.5 秒），一次提交里有 2 位以上发言人才生效。倒计时期间可以直接打断或点名。
 
 2026-10-13 17:5x **多人讨论**：一轮的触发条件从「真人发一句」改成「真人都说完」——
 - 房间当前**在线**的真人每人说满一句就点亮自己（后面再说是补充）；
@@ -46,13 +46,14 @@ MAX_TRANSCRIPT_CHARS = 30000
 TAIL_KEEP = 10
 HEAD_KEEP = 2
 
-# 轮内间隔（2026-10-13 用户要求「至少 3 秒以上」）：
+# 轮内间隔（2026-10-13 用户要求「至少 3 秒以上」；2026-10-15 用户要求把下限放开到 0.5 秒）：
 # 一次提交里有 2 位以上发言人时，上一位说完不立刻接话，先等这么久再让别人开口。
 # 作用有二：① 发言人换人时留出可感知的节奏，避免连续刷屏；
 #          ② 给主持人留一个「打断 / 点名」的窗口（点名的优先级永远高于自动调度）。
-# 房间级配置键：rooms[].debate.auto_speak_gap_ms，下限锁 3 秒，上限 60 秒。
+# 房间级配置键：rooms[].debate.auto_speak_gap_ms，下限 0.5 秒，上限 60 秒。
+# ⚠️ 2026-10-15：关掉思考并把发言限长之后，一轮只剩十几秒，间隔占比反而变大 → 下限放开。
 DEFAULT_GAP_MS = 3000
-MIN_GAP_MS = 3000
+MIN_GAP_MS = 500
 MAX_GAP_MS = 60000
 
 
@@ -207,7 +208,10 @@ class Orchestrator:
         return True
 
     def gap_ms(self, room_id: str) -> int:
-        """轮内间隔（毫秒）：房间 debate.auto_speak_gap_ms，缺省 3000，钳到 [3000, 60000]。"""
+        """轮内间隔（毫秒）：房间 debate.auto_speak_gap_ms，缺省 3000，钳到 [500, 60000]。
+
+        下限 2026-10-14 由 3000 放宽到 500：模型思考关闭后每位只需 1~3 秒，3 秒空档变得很浪费。
+        """
         room = self.store.room(room_id) or {}
         debate = room.get('debate') or {}
         raw = debate.get('auto_speak_gap_ms')
@@ -337,10 +341,21 @@ class Orchestrator:
                                   'label': label, 'total': len(steps)})
             # 轮内间隔只在「一次提交里有 2 位以上发言人」时生效；单条（点名 / 总结）不用等。
             gap = self.gap_ms(room_id) if len(steps) > 1 else 0
+            # 2026-10-15 用户要求：某位模型调用失败 → 跳过它继续下一位，不再整轮报废。
+            # _speak 返回 'ok'（说了）/ 'skip'（失败跳过）/ 'abort'（成本护栏，整轮立刻停）。
+            skipped = 0
             for idx, step in enumerate(steps):
                 if idx and gap:
                     await self._gap_pause(room_id, step, idx, gap)
-                await self._speak(room_id, step, idx, len(steps))
+                outcome = await self._speak(room_id, step, idx, len(steps))
+                if outcome == 'abort':
+                    break
+                if outcome != 'ok':
+                    skipped += 1
+            if skipped and skipped == len(steps) and len(steps) > 1:
+                await self.broadcast({'type': 'error', 'roomId': room_id,
+                                      'error': f'本轮 {len(steps)} 位模型全部调用失败，一条发言都没拿到'
+                                               '（多为额度 / 网络 / 模型 ID 问题），已全部跳过。'})
             await self.broadcast({'type': 'run_end', 'roomId': room_id, 'label': label})
         except asyncio.CancelledError:
             await self._safe_broadcast({'type': 'run_end', 'roomId': room_id,
@@ -370,20 +385,23 @@ class Orchestrator:
         except Exception:
             pass
 
-    async def _speak(self, room_id: str, step: dict, idx: int, total: int) -> None:
+    async def _speak(self, room_id: str, step: dict, idx: int, total: int) -> str:
+        """让一位模型发言。返回 'ok' / 'skip' / 'abort'：
+        - 'skip'  = 这位没说成（不在模型库 / 调用失败），跳过、轮次继续（2026-10-15 用户要求）
+        - 'abort' = 触发全局成本护栏，整轮立刻停（提示语本来就写着「本轮停止」）"""
         model_ref = step.get('model_ref')
         cfg = self.store.resolve(model_ref or '')
         if not cfg:
             await self.broadcast({'type': 'error', 'roomId': room_id,
-                                  'error': f'模型 {model_ref} 不在模型库里'})
-            return
+                                  'error': f'模型 {model_ref} 不在模型库里，已跳过'})
+            return 'skip'
 
         guard = self.store.cost_guard()
         cap = guard.get('max_total_calls')
         if cap and self.total_calls >= int(cap):
             await self.broadcast({'type': 'error', 'roomId': room_id,
                                   'error': f'已达全局调用上限 {cap} 次（成本护栏），本轮停止。'})
-            return
+            return 'abort'
 
         history = self.rooms.messages(room_id)
         round_no = step.get('round') or (int(self.rooms.load(room_id).get('round') or 0) + 1)
@@ -435,10 +453,14 @@ class Orchestrator:
             error = str(exc)
 
         if error:
+            # 调用失败 → 跳过这位、轮次继续（原来这里 raise ProviderError，_run 一接住整轮就报废，
+            # 界面上除了「调用失败」还会再弹一条 ProviderError）。message_error 照发（前端照常提示），
+            # 多带 name / skipped 两个字段，让前端把「已跳过」说清楚。
             await self.broadcast({'type': 'message_error', 'roomId': room_id,
                                   'msgId': msg['id'], 'error': error,
+                                  'name': cfg['display_name'], 'skipped': True,
                                   'elapsed': round(time.time() - started, 2)})
-            raise providers.ProviderError(error)
+            return 'skip'
 
         # 不再摘发言类型标签：模型完全自主回答，正文原样入库（2026-10-13 取消标签机制）
         final = dict(msg)
@@ -450,6 +472,7 @@ class Orchestrator:
         })
         self.rooms.append(room_id, final)
         await self.broadcast({'type': 'message', 'roomId': room_id, 'message': final})
+        return 'ok'
 
     def _previous_speaker(self, history: list) -> str:
         for m in reversed(history):

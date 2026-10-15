@@ -171,11 +171,11 @@
       <select id="mProvider"></select>
     </div>
     <div class="field">
-      <label>base_url <span class="tip">（选预设会自动填，也可手填任意 OpenAI 兼容端点）</span></label>
+      <label>base_url <span class="help" tabindex="0" aria-label="查看 base_url 说明" data-tip="接口地址。选了上面的「厂商预设」会自动填好，一般不用动。只有在用自建服务或中转服务时才需要手改成自己的地址。">?</span> <span class="tip">（选预设会自动填，也可手填任意 OpenAI 兼容端点）</span></label>
       <input id="mBaseUrl" placeholder="https://...">
     </div>
     <div class="field">
-      <label>模型 ID <span class="tip">（点右侧可从厂商拉列表；拉不到就照控制台手填）</span></label>
+      <label>模型 ID <span class="help" tabindex="0" aria-label="查看模型 ID 说明" data-tip="模型在厂商那边的真实编号，必须一字不差（大小写、版本日期都算数）。控制台里显示的名字常常和这个编号不一样 —— 列表拉不到时，照控制台把编号原样复制过来。">?</span> <span class="tip">（点右侧可从厂商拉列表；拉不到就照控制台手填）</span></label>
       <div class="row">
         <input id="mModel" placeholder="例如 glm-4.7-flash">
         <button type="button" id="btnFetchModels" class="mini">拉取列表</button>
@@ -183,22 +183,28 @@
       <div id="mModelOptions" class="chips"></div>
     </div>
     <div class="field">
-      <label>显示名</label>
+      <label>显示名 <span class="help" tabindex="0" aria-label="查看显示名说明" data-tip="聊天室里给这位参与者看的名字，随便起，只影响显示，不影响调用。建议带上厂商名，便于一眼看出谁是谁。">?</span></label>
       <input id="mDisplay" placeholder="例如 智谱 GLM-4.7">
     </div>
     <div class="field row2">
-      <span><label>temperature</label><input id="mTemp" type="number" step="0.1" min="0" max="2" value="0.8"></span>
-      <span><label>max_tokens</label><input id="mMaxTokens" type="number" min="64" max="32000" value="1200"></span>
+      <span><label>temperature <span class="help" tabindex="0" aria-label="查看 temperature 说明" data-tip="控制回答的随机性，范围 0～2。调低（0～0.5）＝更稳更保守，适合要事实和结论的场合；调高（1～1.5）＝更发散、更有想法，也更容易跑题。默认 0.8。注意：它只影响风格，几乎不影响速度。">?</span></label><input id="mTemp" type="number" step="0.1" min="0" max="2" value="0.8"></span>
+      <span><label>max_tokens <span class="help help-l" tabindex="0" aria-label="查看 max_tokens 说明" data-tip="这个模型单次发言最多能写多长（含它思考的字数；1 个 token 约等于 1 个汉字或几个字母）。调小＝回答更短、也更快，是提速的主要手段之一；调得太小会写不完、甚至正文空白。建议 600～1200。">?</span></label><input id="mMaxTokens" type="number" min="64" max="32000" value="1200"></span>
     </div>
     <div class="field">
-      <label>思考档位 <span class="tip">（统一写法 low / high / max，各厂商按自己的规则接收；免费线路有抖动，效果是倾向）</span></label>
+      <label>思考档位 <span class="help" tabindex="0" aria-label="查看思考档位说明" data-tip="推理模型会先在心里写一大段草稿再作答，慢主要慢在这里。off＝彻底关掉思考，回答最快，但不是每家厂商都支持；low / high / max＝保留思考、只调强度，越强越慢。免费线路本身会抖动，档位是倾向不是保证。">?</span> <span class="tip">（统一写法 off / low / high / max，各厂商按自己的规则接收；off＝彻底关思考、回答最快，仅部分厂商支持；免费线路有抖动，效果是倾向）</span></label>
       <select id="mThinkLevel">
         <option value="">不设置（不干预）</option>
+        <option value="off">off · 关闭思考（仅部分厂商支持）</option>
         <option value="low">low · 最省</option>
         <option value="high">high</option>
         <option value="max">max · 最强</option>
       </select>
       <div id="mThinkNotice" class="tip"></div>
+    </div>
+    <div class="field">
+      <label>off 关法 <span class="help" tabindex="0" aria-label="查看 off 关法说明" data-tip="选了 off 档之后，到底往请求里塞哪个参数。默认「自动」＝按本机实测过的表判 —— 同一家网关里也有差别（百炼挂的 DeepSeek 关得掉、GLM-5.3 关不掉），所以表是按「模型」存的。只有遇到没核实过的模型组合才需要在这里手动指定一种。">?</span> <span class="tip">（自动＝按实测表；手动＝强制发某一种，给没核实过的模型留口子）</span></label>
+      <select id="mOffMode"></select>
+      <div id="mOffNotice" class="tip"></div>
     </div>
     <label class="check"><input id="mEnabled" type="checkbox" checked> 启用</label>
     <div id="mProbeResult" class="probe"></div>

@@ -2,7 +2,7 @@
 
 > **这是"活文件"，每次收工前必须更新。**
 > 它记录的是**现在做到哪一步了**；设计目标、硬需求、验收标准看同目录的 `BRIEF.md`。
-> 最后更新：2026-10-15 第七批
+> 最后更新：2026-10-15 第十一批（把「跳过失败」版发布公网，并保住线上独有房间）
 
 ---
 
@@ -14,11 +14,27 @@
 **默认讨论室取消房主（无主房间·人人全权）**（10-15）、**`/admin` 改左导航 + 右面板**（10-15）、
 **用户库「移除」= 全局删除用户（保留发言）**（10-15）、
 **房间定义搬进 `data/room_index.json`（B 方案）**（10-15 第六批）、
-**回收站按人隔离 + 无系统回收站也能彻底删除 + `/admin` 房间库**（10-15 第七批）。
+**回收站按人隔离 + 无系统回收站也能彻底删除 + `/admin` 房间库**（10-15 第七批）、
+**外观「青瓷雅致」**（10-15 第九批）、**单个模型调用失败 → 跳过它、下一位继续**（10-15 第十批）、
+**「回答太慢」的两处页面开关**（10-15 第十二批：思考档位加 `off` 档 / 间隔下限由 3 秒放宽到 0.5 秒）、
+**模型参数悬停说明气泡**（10-15 第十三批）。
 
-最近一次改动 = **10-15 第七批**（详见文末那一节）：
-修掉「公网上删不掉房间」、回收站只能看到自己删的、`/admin` 新增「房间库」看全部房间。
-✅ **已重新发布到公网并线上验收 24/24 全过**（用户当轮选「现在就发布」），
+最近一次改动 = **10-15 第十三批**（详见文末那一节）：
+用户要求「更新到公网 + 给模型相关参数（如 `temperature` / `max_tokens`）加说明，鼠标悬停时显示」。
+① 在 `/admin` 的模型编辑弹窗里给 6 个参数加了 **`?` 悬停气泡**（纯 CSS `content: attr(data-tip)`，
+不写死颜色、支持键盘聚焦）；② 走标准流程**重新发布公网**，线上验收 **全项 PASS / `EXIT=0`**
+（含本次新增的第 9 节断言：线上确实有 6 个气泡 + `off` 档 + 间隔下限 0.5）。`_test_cards.js` **575/575**。
+
+上一批 = **10-15 第十二批**：
+用户报「模型回答非常慢，远不如网页版快」。用**三段计时**（首字 / 首正文 / 总时长）量化定位到
+**两个真正的大头**：① 模型**思考**（`reasoning_content`）、② **正文不设上限**（动不动两三千字）——
+**不是网络、不是 `max_tokens`、不是上下文长度**。把这两处调下来后，同一问题从 **244 秒/轮 → 14 秒/轮**。
+落地做法按用户要求「**都通过页面手动配置**」：模型库的**思考档位加 `off`**（按厂商方言真关掉）、
+控制条的**间隔下限放宽到 0.5 秒**。
+
+更早一批 = **10-15 第十一批**：
+把第九 / 第十批的成果**发布到公网**（`https://multi-model-chatroom.app.workbuddy.host/`，链接不变），
+并用 `--merge-rooms` 保住了**线上独有房间**「今晚吃什么？」；线上全量验收 EXIT=0。
 其中第 7 节**在线上真删了一个房间**、`permanent=True` —— 公网那个 bug 已在线上实证修好。
 
 📦 **版本管理（10-15 第八批建立）**：此前项目**从没有 git 历史**（只有一份 `.gitignore`）；
@@ -28,6 +44,12 @@
 `.bat` 必须 CRLF）。`.gitignore` 另外补挡了 `tools/_pre_rooms_migration_config.json`
 （**含明文 Key 的备份**）、`tools/_online_rooms.json`、`.deploy/`。
 **提交纪律**：平时改代码/跑验证不提交，等用户说「提交 / 存个版本」再动。
+
+🎨 **外观（10-15 第九批）**：功能冻结，按用户要求**只美化外观、不动任何功能代码** ——
+只改 `static/style.css` 一个文件：浅青灰 + 青瓷绿 + 木色「青瓷雅致」主题，
+外加四项纯 CSS 附加项（模型名彩色圆点 / 自动跟随系统深浅色 / 正文放大一档 / hover 0.18s 过渡）。
+`tools/_test_cards.js` **566/566** 全过；**已重新发布到公网并线上验收 EXIT=0 全过**
+（含「线上 style.css 确实是新版」的断言）。详见文末第九批那一节。**只差 git 提交**（等用户发话）。
 
 下面 1~15 是历次改动（保留备查）：
 
@@ -997,5 +1019,428 @@ new Headers({'X-Owner-Keys': JSON.stringify({'测试-9b0986': 'abc'})})
   并修掉它还在读 `config.json` 的 `rooms` 的老毛病 → 改读 `data/room_index.json`）。
 - ⚠️ **仍未验证**：真浏览器里点 `/admin → 房间库`、两个真实浏览器各看各的回收站；
   沙箱重启 / 再重发布后线上手改的配置能否留存；公网免密码下冒名的实际后果。
+
+---
+
+## 第九批（10-15）：外观美化「青瓷雅致」
+
+**用户原话**：「功能暂时这样了，现在聊天室的外观设计太简单了，不好看，你给美化一下。
+记住不要动任何功能代码，只优化外观设计、风格，颜色、背景等等。你可以先给几个方案我选择」
+
+先用可视化工具出了 4 个**纯 CSS** 方向（A 纸感极简 / B 深空夜航 / C 青瓷雅致 / D 霓虹终端）让用户挑，
+用户选 **C 青瓷雅致**，并**四项附加全勾**：模型名彩色圆点、自动跟随系统深浅色、正文放大一档、hover 轻微过渡。
+
+### 改了什么（**只有一个文件：`static/style.css`**）
+
+| 项 | 内容 |
+|---|---|
+| 配色底座 | 浅青灰页面底 + 白面板；主色 **青瓷绿 `--accent #2f6f62`**；**木色 `--wood #a9762f`** 专门给真人 / 房主；圆角 9/10/16px；`.brand` 加青瓷小方标；顶栏加一条 `box-shadow: 0 1px 0` 做分层；细滚动条（`scrollbar-color` + `::-webkit-scrollbar-thumb` 内缩 3px）；`::selection` 用主色淡底 |
+| 变量化 | **把全部硬编码颜色收进 `:root`**（新增 `--panel-2/3`、`--card-bg`、`--btn-bg`、`--input-bg`、`--chip-bg`、`--hover`、`--line-strong`、`--accent-line*`、`--focus-ring`、`--warn-*`、`--wood-*`、`--dot-off/--dot-1..5`、`--toast-*`、`--veil`、`--backdrop`、`--shadow`、`--quote-*`、`--scroll`），共 40 余个 —— **这是深色模式能"只覆盖变量"的前提** |
+| 附加① 圆点 | `.msg-who::before`（模型 5 色轮转、真人木色）+ 右栏参与者卡 `#participantList > .card .card-top::before`。轮转靠 `#messages > .msg.model:nth-child(5n+k)` / `#participantList > .card:nth-child(5n+k)`，**按顺序轮转、不是按模型身份**（CSS 拿不到模型 id，也不值得为它改 JS） |
+| 附加② 深色 | `@media (prefers-color-scheme: dark) { :root { … } }` **只覆盖变量**，其余样式靠 `var()` 自动换色；两处各声明 `color-scheme: light / dark`。**零 JS** |
+| 附加③ 正文 | `body` 13px/1.6 → **13.5px/1.75**，`.msg-body` 同步；`.card-sub.two` 的 `min-height` 2.9em → 3em 维持卡片等高 |
+| 附加④ 过渡 | 两组选择器统一 `transition: background-color/border-color/color/opacity/box-shadow .18s ease`，**刻意不用 `transition: all`**（那会把宽高位置也带上动画）；另加 `@media (prefers-reduced-motion: reduce)` 全部关掉 |
+
+**没动**：`app.js` / `admin.js` / `index.html` / `admin.html` / 任何后端、任何布局尺寸（grid 列宽、padding、gap、flex 规则一律原样）。
+CSS 里的**选择器名一个都没改**，所以现有测试断言零打红。
+
+### 验证
+
+- ✅ `tools/_test_cards.js` **566/566**（两个沙箱各一遍）。其中就含 CSS 相关那几条：`.gate` / `.person` /
+  `.badge-owner` / `.rprog` / `.room-code` / `.owner-only[hidden]` / `#btnLeave:disabled` / `.adminwrap` /
+  `.navitem` / `.apanel`，以及 `.apanel{display:none}` + `.apanel.active{display:block}`、
+  「不该再有发言类型 chip 配色」。
+- ✅ CSS 结构粗检：花括号 226/226 配平；上列选择器全在；圆点规则各 5 条；深色媒体查询在。
+- ✅ **主题预览页**：`output/_preview/`（**项目目录之外，不进仓库**）由 `_gen_preview.py` 生成
+  `chatroom-theme-light.html` / `chatroom-theme-dark.html` —— 把**产品真的 `style.css` 内联**进来，
+  再在末尾追加一次对应变量块强制锁定配色（同特异性、后写覆盖，与系统偏好无关），
+  配一份与 `index.html` 同结构的 DOM 骨架（消息 / 真人 / 模型卡 / 回收站 / 规则说明都摆上）。
+  两份都做了标签配平粗检（div 94/94、span 50/50 …）。
+- ⚠️ **未验证**：**真浏览器里的实际观感**（本机开不了带调试端口的浏览器）；深色模式在系统切换下的实时表现；
+  字体放大后各卡片是否仍等高（只做了 CSS 层面的 `min-height` 补偿推算）。
+- ⚠️ 生成脚本踩的坑：`css.index("@media (prefers-color-scheme: dark)")` **命中了文件顶部注释里的同一串文字**
+  → 深色页错拿了**浅色**变量块（两份 html 长度一模一样才暴露）→ 改成按「**带 `{` 的那处**」定位。
+- ✅ **已重新发布到公网**（用户当轮只说「只发布公网」）：先 `tools/_probe_online_rooms.py` 只读探线上
+  （只有 `room-default`、昵称表 `['福老师']`，**无线上独有房间 → 不需要 `--merge-rooms`**）
+  → `python tools/make_deploy_copy.py` 重建副本（17 文件 / 5 家 Key / 1 个房间迁移载荷，
+  **副本里已含新版 style.css**）→ 发布复用同一应用（沙箱 id `a2f69d8a…` 不变、`verified: true`）
+  → 链接不变 **https://multi-model-chatroom.app.workbuddy.host/**。
+- ✅ **线上验收 `tools/_verify_public_full.py` EXIT=0 全过**（本次给它加了 3 条「外观真的上线了」的断言）：
+  线上 `style.css` **30 025 字节**、含「青瓷雅致」主题标记与 `--dot-1:`、**已无旧主色 `#185fa5`**、
+  含 `prefers-color-scheme: dark`；其余照旧全过 —— HTTP 五入口 200 / 匿名无 `banned` / wss 穿 HTTPS 反代 /
+  `glm-4-flash` 真打 200 有正文 / 线上删用户 / 线上删房间 + 彻删 `permanent=True`，探针数据已自清干净。
+- ⚠️ **未做**：**没有** `git add/commit`（遵守提交纪律，等用户说「提交」）。
+
+---
+
+## 第十批（10-15）：模型调用失败 → 跳过继续，不再整轮报废
+
+**用户拿截图来报**：某位模型 429（「该模型当前时段调用量过大」），界面上弹了两条红 toast
+（`调用失败：HTTP 429…` 和 `ProviderError(HTTP 429…)`），**整轮当场停掉**，后面的模型全没开口。
+用户要求：「如果某个模型调用失败就跳过到下一个模型回答问题」。
+
+### 病根（读码定位）
+
+`Orchestrator._speak()` 在调用失败时除了广播 `message_error`，还 **`raise providers.ProviderError(error)`**
+→ 一路抛回 `_run()` 的 `except Exception` → 只广播一条 `error` 就收工，**本轮剩余步骤全部作废**。
+所以界面才会先弹「调用失败」再弹「ProviderError(...)」两条，且轮次直接结束。
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `app/orchestrator.py` | `_speak()` **不再 raise**，改成返回状态串：`'ok'`（说了）/ `'skip'`（失败或不在模型库，跳过）/ `'abort'`（触发全局成本护栏）。`_run()` 按返回值决定继续还是 break；`message_error` 照发，**多带 `name`（失败的模型显示名）和 `skipped: true`**。**顺手修了一个老毛病**：成本护栏的提示语写「本轮停止」，但代码只是 `return`、下一step还会再撞一次护栏再报一次 —— 现在真会 `break` 停轮。全部失败（≥2 步且全部 skip）时补一条汇总 error：「本轮 N 位模型全部调用失败…已全部跳过」 |
+| `static/app.js` | `message_error` 的 toast 文案按 `m.skipped` 分叉：跳过时显示**「「某某」调用失败，已跳过、由下一位继续：…」**；不带 skipped 字段的（老事件）保持原文案。没动其他任何逻辑 |
+
+**语义保持不变的部分**：打断（stop / 点名）仍然立刻接管、半截输出照样丢弃；成本护栏达到上限仍然停轮；
+单条指令（点名 / 指定总结）失败 = 这一位没说成，行为同前只是不再抛异常。
+
+### 验证
+
+- ✅ **新增自检用例（4a4）**：造一个「必然失败」的模型（`provider='selftest-不存在'` + 无 base_url
+  → `stream_chat` 第一行就抛 `ProviderError('base_url 为空…')`，**不花钱、不等重试、结果确定**），
+  排在一位 mock 模型前面，发一句话自动轮流，断言 4 条：
+  ① 失败方收到 `message_error` 且 `name='自检·必失败'`、`skipped=True`；
+  ② 失败方**没有**半截内容入库；③ **排在后面的 mock 模型照样发言**（轮次没断）；
+  ④ 整轮正常 `run_end`（不是 error 中断）。清场已并入第 8 节（房间 + 模型都删）。
+- ✅ `tools/selftest.py` **252/252 全过**（245 → 252，新增 6 条）。
+- ✅ `tools/_test_cards.js` **566/566 全过**。
+- ⚠️ **踩坑（老坑重踩，值得写死）**：`selftest.py` **不自己起服务**，默认连 `http://127.0.0.1:8765`
+  上**已经在跑的服务** —— 第一遍跑出 3 条 FAIL，症状是 `message_error` 里没有 `name/skipped`、
+  没有 `run_end`：**测的还是旧代码**。正确顺序 = **停服务 → （清 `app/__pycache__`）→ 重启 → 再跑自检**。
+  本次照此办：停掉 PID 28236 → `app/__pycache__` 整目录送 Windows 回收站（项目自带 `app/recycle.py`，
+  `rc=2` 但路径已消失，按「原路径消失」判成功）→ 后台重启（`NO_BROWSER=1`，日志 `tools/_server.log`）→ 全绿。
+- ⚠️ **未验证**：真浏览器里实际看到「已跳过、由下一位继续」的 toast（本机开不了调试端口浏览器）；
+  真实 429 场景没复现（用确定性失败代替）。
+
+---
+
+## 第十一批（10-15）：把「跳过失败」版发布公网 + 保住线上独有房间
+
+**用户只说「发布公网」**（本轮明确发话，同意才生效、不跨轮继承）→ 重发布 + 线上全量验收。
+
+### 本轮最重要的发现：线上长出了「公网独有房间」
+
+发布前必须先用只读探针看线上有什么（`tools/_probe_online_rooms.py`）。本次探到线上**两个房间**：
+
+| id | 名称 | 谁建的 | 说明 |
+|---|---|---|---|
+| `room-default` | 默认讨论室 | 系统 | 公开房、无主 |
+| `今晚吃什么-8417b1` | 今晚吃什么？ | **线上用户「福老师」** | **本地 `data/room_index.json` 里没有**；成员 2 人（福老师 + **新用户「旺袅袅」**），2 位模型参与者 |
+
+🔴 **这就是 B 方案的唯一雷点**：房间的长期事实来源在线上 `data/room_index.json`（`data/` 不上传），
+重发布时副本 `config.json` 里的 `rooms` 只是「一次性迁移载荷」，**线上已有索引时会被忽略**。
+换句话说：**本地没有、线上独有的房间，不处理就会在重发布后消失**（历史文件还在云上，但界面上找不回来）。
+
+### 正确流程（以后每次重发布照抄）
+
+```powershell
+# 0) 先看线上，并写出最新快照（必须带 --out，否则读到的是上一轮的旧文件）
+python tools\_probe_online_rooms.py --out tools\_online_rooms.json
+# 1) 重建发布副本，把「线上独有房间」并进迁移载荷（按 id 去重，只补本地没有的）
+python tools\make_deploy_copy.py --merge-rooms tools\_online_rooms.json
+#    → 打印：迁移载荷房间 1 个：room-default / 其中并入的线上独有房间：今晚吃什么-8417b1
+# 2) 用内置「发布为应用」发布 output/.deploy/multi-ai-chatroom/
+#    （复用现有 app：updateExistingApp + userAskedToPublish；python / pip install -r requirements.txt / python run.py）
+# 3) 线上全量验收
+python tools\_verify_public_full.py
+```
+
+`--merge-rooms` **是安全操作**：线上已有索引时它是**无害 no-op**；线上没有索引时它起保护作用。
+
+### 验证
+
+- ✅ **线上验收 EXIT=0，全项 PASS**。本次实测值：
+  - `/static/style.css` **30 025 字节**，含「青瓷雅致」+ `--dot-1:`、**无旧主色 `#185fa5`**、含 `prefers-color-scheme: dark` → 外观新版真上线；
+  - `/static/app.js` **68 738 字节**，含「已跳过」→ 跳过失败的新前端真上线；
+  - `wss://` 穿 HTTPS 反代 OK（`joined.ownerless=True`）；
+  - `/api/probe` 智谱 `glm-4-flash` **真实回文 295 字**（沙箱能出网、Key 可用）；
+  - 5 家 Key 全 `key_set`；`/api/state` 无旧 `banned` 键；
+  - 线上真建房间 → 管理员删 → `recycle_available=False` → `DELETE /api/trash/{id}` **200 + `permanent=True`**；
+  - 删用户后同名立刻可重登（200 + `is_new=True`）；
+  - **`room-default` 与线上独有的 `今晚吃什么-8417b1` 都在**、该房成员 ≥2（含「旺袅袅」）。
+- 🔴 **自摆乌龙（记下来别重犯）**：`_verify_public_full.py` 第 8 节的断言最初复用了变量 `js`，
+  但 `js` 是第 1 节从 **`/static/admin.js`** 读的 → `'已跳过' in js` 必然 FAIL。
+  **「已跳过」在 `app.js` 里**。修法：第 8 节自己再 `req('GET', '/static/app.js')` 取一份。
+  **教训：断言复用变量前，先确认这个变量到底读的是哪个文件。**
+- ⚠️ **踩坑**：第一次探线上忘了带 `--out`，`tools/_online_rooms.json` 还是旧快照
+  （里面是 `今晚吃什么-6e6b71`，线上真实 id 是 `今晚吃什么-8417b1`）—— **探完必须带 `--out` 覆盖**，
+  否则 `--merge-rooms` 并进去的是一个线上早已不存在的房间 id。
+- ✅ **核实了一条容易想当然的事实：`--merge-rooms` 到底保得住什么**。
+  `code`（房间号）与 `owner_key`（房主钥匙）是**刻意不外发**的凭据 —— 实测**普通口径与管理员口径的
+  `/api/state` 都取不到**（恒为 `None` / 空串）。所以并进来的房间**只有定义**
+  （名称 / 参与者 / 成员表 / `owner_uid` / `open` / `no_owner` / `debate`），**房间号与房主钥匙并不过来**。
+  换句话说：**线上已有索引时**（本批的情况）载荷被忽略、线上一切原样，`--merge-rooms` 只是
+  「万一线上没索引」的保险；**线上真的消费了载荷那一次**（第一次上 B 方案），线上独有房间会**重发房间号、
+  原房主失去旧钥匙**，要接受这个代价（或让房主重新认领）。→ 同步修掉了 `_probe_online_rooms.py`
+  docstring 里「含 code / owner_key」的误导描述（它打印这两个字段，但其实恒空）。
+- ⚠️ **未做**：git 提交（第九 / 十 / 十一批的改动**全都还没提交**，按纪律等用户说「提交」）；
+  真浏览器点击交互与「青瓷雅致」实际渲染仍未验证。
+
+
+
+## 第十二批（10-15）：回答慢 → 把「关思考 / 调间隔」做成页面开关
+
+### 用户报的问题
+
+「模型回答非常慢。远远没有网页版的快。有啥办法吗」
+
+### 定位过程（**先量化，再改**）
+
+写了两支一次性探针（都在 `tools/`，可复现）：
+
+- `_latency_probe.py`：**三段计时** —— `ttft_any`（首字节，含思考）/ `ttft_body`（首个 `content`）/ `total`。
+  `ttft_body − ttft_any` 就是**思考吃掉的秒数**。附 `max_tokens` 对照与「大上下文」对照。
+- `_latency_probe2.py`：三组对照 —— 原样 / 关思考 / 关思考+限长 200 字。
+
+**结论（同一问题、串行）：**
+
+| 模型 | 原样 | 关思考 | 关思考 + 限长 200 字 |
+|---|---|---|---|
+| `doubao-seed-2-1-pro` | **148.6s**（思考 907 / 正文 2408 字） | 29.7s | **3.6s** |
+| `qwen3.8-flash` | 51.3s（思考 162 / 正文 3028） | 19.2s | **1.7s** |
+| `deepseek-v4.1-flash` | 37.2s（思考 3458 / 正文 950） | 11.7s | **2.6s** |
+| `glm-4.7-flash` | 63.0s（思考 2040 / 正文 1408） | ⚠️ 429（**关不掉**） | 35.7s |
+
+- **大头 = 思考 + 正文不限长**，两者叠加。默认房间 3 位 + 2×3s 间隔 ≈ **244s/轮**；关思考+限长后 ≈ **14s/轮**。
+- ❌ **不是网络**（同机不同厂商差异巨大）、❌ **不是 `max_tokens`**（8000→600 输出长度几乎没变）、
+  ❌ **不是上下文长度**。
+- ⚠️ **一个差点写错的结论**：第一版探针的 prompt 里自带「不超过 200 字」，于是 `max_tokens` 看起来
+  毫无影响；换成房间真正用的**无长度约束** `shared_prompt` 后，长度才暴露出是最大因素。
+  **教训：测延迟必须用真实提示词。**（已写进技能 `llm-api-latency-triage`）
+- 另查出两个配置缺陷（**未改，只记录**）：① 房间 3 的显示名写 `hunyuan-turbos`，实际调的是 dashscope
+  的 `deepseek-v4.1-flash`；② `shared_prompt` 没有长度约束，甚至还写着「把理由说完整」。
+
+### 用户定的做法（AskUserQuestion 两问）
+
+1. 「这些配置都通过页面实现，由用户手动配置完成」→ **不做预置值，做成页面上用户自己能调**。
+2. 「关掉思考」和「间隔 < 3 秒」页面上配不出来 → 用户选「**两个都加**」。
+
+### 改了什么
+
+- **`app/providers.py`**
+  - `REASONING_LEVELS` 加 `'off'`；
+  - 新增 `REASONING_OFF_BODY`（**各家关法形状不同，单独一张表**）：
+    `ark` / `hunyuan` → `{'thinking': {'type': 'disabled'}}`，`dashscope` → `{'enable_thinking': False}`；
+    **不在表里的厂商 = 实测关不掉**；
+  - `REASONING_OFF_NOTE` / `REASONING_OFF_UNSUPPORTED_NOTE`（给前端显示「这家到底关不关得掉」）；
+  - `reasoning_dialect()` 多返回 `off_supported` / `off_note`；
+  - ⚠️ **`build_payload()` 的关键修正**：`off` 是特例，**绝不能把字符串 `'off'` 当档位值发出去**
+    （没有厂商认这个值）—— 要走 `REASONING_OFF_BODY` 合并进请求体；表里没有的厂商 **什么都不发**。
+    （原来 `level in REASONING_LEVELS` 会把 `'off'` 直接写成 `reasoning_effort='off'`，是个真 bug。）
+- **`app/orchestrator.py`**：`MIN_GAP_MS` **3000 → 500**（下限放开）；两处 docstring 同步。
+- **`static/admin.html` / `admin.js`**：`mThinkLevel` 加 `off` 选项；`renderThinkNotice()` 重写处理 `off`
+  （支持 → 说明会发什么；不支持 → 「⚠️ 这一家实测关不掉 —— 选它不会提速」）。
+- **`static/index.html` / `app.js`**：`gapInput` `min` 3→**0.5**、`step` 1→**0.5**；
+  `gapSeconds()` / `setGap()` 改用 `parseFloat` + `Math.max(0.5, …)`（保留 0.1 秒精度）。
+- **`data/room_index.json`**：默认房 `auto_speak_gap_note` 里「下限 3000（3 秒）」改成 500。
+
+### 验证
+
+- ✅ `tools/selftest.py` **258/258 全过**（252 → 258，新增 6 条 off 档断言：ark/dashscope 方言、
+  zhipu 关不掉时**不发脏值**、extra_body 仍可覆盖、前端能拿到 `off_supported`）。
+- ✅ `tools/_test_cards.js` **568/568 全过**（566 → 568，新增 off 选项 + `off_supported` 处理两条）。
+- 🔴 **红了 4 条断言，全是「旧规则的断言」不是代码**（改数据模型必踩，记下来）：
+  `selftest.py` 里 `gap_ms >= 3000` / `(t_next - t_gap) >= 2.5`、`_test_cards.js` 里
+  `auto_speak_gap_ms >= 3000` / `min="3"` —— 全部改成新下限（500 / 0.4 / 0.5）。**红的是断言。**
+- 探针实测值见上表；真实各家 `off` 生效性来自第十二批探针（ark/dashscope 有效，zhipu/deepseek 关不掉）。
+- ⚠️ **未做**：git 提交；**未发布公网**（用户没让发，按纪律等发话）；真浏览器里点一遍「思考档位=off」
+  和「间隔填 0.5」的交互未验证（本机开不了调试浏览器）。
+- 🧹 探针脚本 `_latency_probe.py` / `_latency_probe2.py` **保留**（可复现、只发真实调用但不写盘），
+  报告 `_latency_probe*.txt` 属临时产物。
+- 📚 沉淀了可复用技能 **`llm-api-latency-triage`**（三段计时 + 三组对照 + 各家 off 方言 + 「用真实提示词」）。
+
+
+
+## 第十三批（10-15）：参数悬停说明 + 把第十二批发布到公网
+
+### 用户要求（原话）
+
+「更新到公网，同时模型相关的参数加一些说明，防止别人看不懂，比如 temperature 和 max_tokens 参数，
+鼠标悬停到参数位置时显示参数说明」
+
+### 1) 参数说明气泡（纯 CSS，不加 JS）
+
+- **做法**：`label` 里塞 `<span class="help" tabindex="0" data-tip="…">?</span>`，
+  `style.css` 里 `.help::after { content: attr(data-tip); … }`，靠 `.help:hover::after` /
+  `.help:focus-visible::after` 显示。**说明文字只写在 HTML 的 `data-tip` 一处**，CSS 不重复。
+- **为什么不用原生 `title`**：原生气泡延迟 1 秒、不能换行、样式不可控，而且和自定义气泡会**双弹**。
+- **为什么不用 JS**：零依赖是项目铁律；纯 CSS 能覆盖「鼠标悬停」这个唯一要求。
+- **无障碍**：`tabindex="0"` + `aria-label="查看 XX 说明"` → 键盘 Tab 也能看到说明。
+- **6 个参数全部有说明**：`base_url` / 模型 ID / 显示名 / **`temperature`** / **`max_tokens`** / 思考档位。
+  文案原则：**先说"它是什么"、再说"调大调小各会怎样"、最后给推荐值**，避免术语。
+  例：`temperature` = 「控制回答的随机性，范围 0～2。调低更稳更保守…调高更发散也更容易跑题。默认 0.8。
+  注意：它只影响风格，几乎不影响速度。」
+  `max_tokens` = 「单次发言最多能写多长（**含它思考的字数**；1 个 token ≈ 1 个汉字或几个字母）。
+  调小＝更短更快，是提速主要手段之一；调太小会写不完甚至正文空白。建议 600～1200。」
+- ⚠️ **样式安全**：气泡颜色全部走 `var()`（`--panel` / `--line-strong` / `--text`），
+  不写死色值 —— 否则 `prefers-color-scheme: dark` 下会瞎掉（第九批定的规矩）。
+  气泡**向左对齐、向上弹出**（`left:-6px; bottom:calc(100% + 8px)`），避免在窄弹窗里被右边裁掉。
+- ⚠️ **最阴的失败模式**：HTML 有 `data-tip` 但 CSS 少了 `content: attr(data-tip)` 时，
+  **气泡是空的、而且不报错**，肉眼还以为是没 hover 上。所以断言**两头都要锁**（见下）。
+
+### 2) 重新发布公网（照抄第十一批的流程）
+
+```
+tools/_probe_online_rooms.py --out tools/_online_rooms.json   # 必须带 --out
+tools/make_deploy_copy.py --merge-rooms tools/_online_rooms.json
+内置「发布为应用」（updateExistingApp + userAskedToPublish）  # 链接不变
+tools/_verify_public_full.py
+```
+
+- 探测结果：线上 2 个房间（`room-default` + 线上独有的 `今晚吃什么-8417b1`）、用户 2 个
+  （福老师 / 旺袅袅）→ `--merge-rooms` 照旧并入，**线上独有房间未丢**。
+- 发布副本 17 个文件、5 家 Key、迁移载荷 = room-default + `今晚吃什么-8417b1`。
+
+### 3) 验证
+
+- ✅ `tools/_test_cards.js` **575/575**（568 → 575，新增 7 条气泡断言：`.help` 数量、
+  `temperature`/`max_tokens` 必须有、`tabindex`+`aria-label`、CSS 必须含 `.help::after` +
+  `content: attr(data-tip)`、hover/focus 规则存在、不许写两个 data-tip）。
+- ✅ `style.css` 花括号 **229/229** 配平；本地实测 `/admin` 服务出 6 个气泡、`style.css` 含 `.help`。
+- ✅ **线上全量验收 `EXIT=0` 全项 PASS**，其中**新增第 9 节**专门证明"本批改动真的上线了"：
+  线上 `/admin` 有 **6 个** `class="help"`、`temperature` / `max_tokens` 都有悬停说明、
+  思考档位含 `value="off"`、`style.css` 含 `.help::after` + `content: attr(data-tip)`（27 710 字符）、
+  首页「间隔」下限 `min="0.5"`。其余各节（wss / 真模型 / 线上删房间 / 线上独有房间）全 PASS。
+- ⚠️ **`_verify_public_full.py` 补了第 9 节的教训**：验收脚本每批都要**加一节断言本批新标记**，
+  否则跑绿了只能证明"老功能还在"，证明不了"新版上去了"。断言**每个都自己拉一次目标文件**，
+  不复用别处读来的变量（第十一批就是复用变量翻车的）。
+- ⚠️ **未验证**：真浏览器里 hover 气泡的实际观感（本机开不了调试浏览器）——只验了
+  HTML/CSS 双头齐全 + 线上服务确实在发这两段内容。
+- 🔴 **安全提醒（已告知用户）**：线上 `/admin` 口令**仍是默认值**（`config_store.DEFAULT_ADMIN_PASSWORD`），
+  而站点是公开的。**要改就得在本地改**再重发布 —— 直接在线上改，下次重发布会把 `config.json`
+  整个盖回去、口令又变回默认。另：本项目**免密码上公网 = 任何人可冒名**（防冒名层没做，属已知取舍）。
+- ⚠️ **仍未做**：git 提交（第九 ~ 第十三批的改动**全部未提交**，按纪律等用户说「提交」）。
+
+### 第十三批 · 补丁 1：弹窗底下那条横向滑杆（用户截图报的）
+
+用户原话：「模型编辑窗口，下面不要这个滑杆，内容展示不下的话，窗口可以宽一点」。
+
+- **真因（上一批我埋的）**：气泡隐藏用 `visibility:hidden + opacity:0` —— **隐藏元素照样占布局**，
+  272px 宽的气泡伸出 `<dialog>` 右缘；`<dialog>` UA 默认 `overflow:auto` → 底部凭空一条横向滚动条。
+  **假 DOM 测试全绿也发现不了**（overflow 只有真浏览器看得见）。
+- **修法**：① 隐藏改 **`display:none`**（不参与布局；淡入改 `@keyframes`，`display` 不能过渡）；
+  ② 右半栏 `max_tokens` 的气泡加 `.help-l` **向左**展开（否则悬停时还会伸出右缘）；
+  ③ `#dlgModel` 单独 `max-width:640px`（其他弹窗不动）；④ 气泡加
+  `max-width: min(272px, calc(100vw - 80px))` 兜底窄屏。
+- ✅ `_test_cards.js` **579/579**（+4 条：`display:none` 必须在 / **禁止再用 `visibility:hidden`** /
+  `.help-l` 存在 / `#dlgModel` 640px）；CSS 花括号 234/234 配平；本地服务已重启并实测带上了修复。
+- ✅ **已重新发布公网**（用户在 AskUserQuestion 里选「现在就重新发布」），链接不变；
+  **线上验收 52/52 全项 PASS / `EXIT=0`**，其中**新增第 10 节**断言滑杆修复真在线
+  （线上 `style.css` 无 `visibility:hidden` 隐藏气泡 / 有 `display:none` / `#dlgModel` 640px /
+  线上 `admin.html` 带 `help help-l`）。
+- 🔴 **验收乌龙（写死）**：第一次重跑红了 2 条 —— 第 9 节按 `class="help"` **精确匹配**数气泡，
+  而 `max_tokens` 的气泡现在带 `.help-l`（`class="help help-l"`）→ 数成 5 个、误报 FAIL。
+  **数 class 要按前缀 `class="help` 数，不能带右引号精确匹配。红的是断言。**
+- ⏸️ 真浏览器里确认"滑杆消失、弹窗变宽"仍需用户看一眼（假 DOM 测不出 overflow）。
+
+## 第十四批（2026-10-15）关思考：从「按厂商」改成「按模型」判定
+
+**用户要求**：「再去核实一下，各个厂商的参数，是否有关闭深度思考的开关，然后更新我们的模型库。
+但是需要注意一点，有的厂商会提供多家的模型，比如百炼除了有自身的千文模型，也同时提供 deepseek 模型，
+其他厂家都有类似情况。」
+
+用户点出的是真问题：原来的 `REASONING_OFF_BODY` 是**按厂商**写的，而百炼同时挂
+Qwen / DeepSeek / GLM / Kimi，TokenHub 同时挂混元 / GLM / DeepSeek / Kimi / MiniMax ——
+**同一个网关里 DeepSeek 关得掉、GLM-5.3 关不掉**，按厂商一刀切必然错。
+
+### 逐模型实测（`tools/_probe_thinking_off.py`，14 个目标 × 5 个候选字段）
+
+| 网关 | 模型 | 基线思考 | thinking.type=disabled | enable_thinking=false | reasoning_effort=none | 结论 |
+|---|---|---|---|---|---|---|
+| ark | doubao-seed-2-1-pro-260915 | 318 字 / **156.6s** | **✅ 0 / 7.5s** | ✗ 505 | ✅ 0 / 2.0s | 可关 |
+| dashscope | qwen3.8-flash | 77 | ✅ 0 | ✅ 0 | ✅ 0 | 可关 |
+| dashscope | deepseek-v4.1-flash | 323 | ✅ 0 | ✅ 0 | ✅ 0 | 可关（跨家托管） |
+| dashscope | glm-5.3 | 988 | **400** restricted | **400** | **400** | ⛔ 关不掉 |
+| hunyuan | hy4-preview | 413 | ✅ 0 | ✗ 521 | ✅ 0 | 可关 |
+| hunyuan | kimi-k3 | 1070 | ✅ 0 | ✗ 1146 | ✅ 0 | 可关（**文档说关不掉，实测能关**） |
+| hunyuan | deepseek-v4-flash | 283 | ✅ 0 | ✗ 231 | ✅ 0 | 可关（跨家托管） |
+| hunyuan | minimax-m3 | 0（自适应） | — | — | — | 本来就不思考 |
+| zhipu | glm-4.5-flash | 255 | **✅ 0 / 1.1s** | ✗ 418 | ✗ 292 | 可关 |
+| zhipu | glm-4.7-flash | 427 | 429（限流挡住） | **✅ 0** | ✗ 434 | 可关 |
+| zhipu | glm-5.3-flash | 1039 | **400「始终思考」** | **400** | **400** | ⛔ 关不掉 |
+| deepseek | deepseek-chat | — | 402 余额不足 | 402 | 402 | 无法验证 |
+
+🔴 **两条被推翻的老结论**（都写进了代码注释，免得再犯）：
+1. **「智谱关不掉、传 thinking 直接 400」是错的** —— 那是当初拿 `glm-5.3-flash`（强制思考型号）
+   试出来的，被误当成整家行为。**GLM-4.5 / 4.7 都关得掉**（实测思考归零）。
+2. **「Kimi-K3 不支持关闭」只在文档上成立** —— TokenHub 官方表格标了「不支持关闭」，
+   但实测 `thinking.type=disabled` 有效（思考 256 tokens → 0）。**文档与实测冲突时以实测为准。**
+
+⚠️ **`thinking_budget` 不是开关**：发 `thinking_budget=1`，思考量照旧（doubao 490、kimi-k3 1065、
+glm-4.7 441），只是被截断 —— 已排除，没进关法表。
+⚠️ **档位参数也有雷**：腾讯 `hy4-preview` 选 **max 直接 400**（官方只给 high/none）；
+kimi-k3 的 low 有效（978→34）；方舟 low 只小幅降档（1171→718）；智谱档位只有 GLM-5.2+ 认。
+
+### 代码改了什么
+
+- `app/providers.py`：新增 `model_family()`（按 model id 前缀认家族）、`HOST_OFF_BODY`（网关关法偏好）、
+  `OFF_MEASURED` / `OFF_DOC_ONLY` / `OFF_IMPOSSIBLE` / `OFF_MOOT` 四张判定表、`thinking_off_plan()`、
+  `resolve_off_body()`、`OFF_MODE_OPTIONS`/`OFF_MODE_BODIES`（页面手选关法）；旧的
+  `REASONING_OFF_BODY` 三张厂商表删掉。`build_payload` 的 off 分支改走 `resolve_off_body()`。
+  🔴 **写死的规矩**：**关不掉的模型什么都不发**（硬发会被厂商回 400，把能用的调用打成报错）；
+  没核实过的组合也不发，界面上留「off 关法」下拉手动覆盖。
+- `app/config_store.py`：`/api/state` 给**每个模型**挂 `off_plan`（卡片角标用）、顶层挂
+  `off_mode_options`；手选关法时 `off_plan` 显示**实际会发的那个字段**（不是自动表里那个）。
+  `upsert_model` 白名单加 `thinking_off_mode`；`resolve()` 把它带进真实调用。
+- `app/main.py`：新增 `GET /api/thinking_off?provider=&model=&mode=`；`/api/probe` 也带上 off 关法。
+- `static/admin.html`：模型弹窗新增「off 关法」下拉 + 判定提示行（第 7 个 `?` 气泡）。
+- `static/admin.js`：`fillOffMode()` / `renderOffNotice()` / `refreshOffPlan()`（模型 ID 一变就重新问
+  后端，300ms 防抖）；卡片加「可关思考 / 思考关不掉」角标；**前端不复制判定规则**。
+- `static/style.css`：`.tag-ok` 角标；`.field .tip.tip-warn`（⚠️ 只写 `.tip-warn` 优先级不够、不生效）。
+- `config.json`：8 条真实模型补 `thinking_off_mode`、改写被实测推翻的 `model_note`（两条还写着
+  「401006 未开启」，其实早通了）；`_README` 重写「思考档位」段 + 新增「关思考」段。
+  配套工具：`tools/_update_model_library.py`（一次性改库）、`tools/_check_off_plan.py`（看判定表，不耗额度）。
+
+### 验证
+
+- `tools/selftest.py` **270/270**（原 258；新增 12 条：家族识别 / 同网关一正一反 / 手动关法覆盖 /
+  `off_plan` 随状态下发 / `/api/thinking_off`）。
+- `tools/_test_cards.js` **589/589**（原 579；新增 10 条 B6c 段）。
+  🔴 **红过 1 条老断言**：它要求 admin.js 里出现 `off_supported`，而判定已挪到模型级 ——
+  **红的是断言**，改成锁「关不掉必须明说」这个意图。
+- ⏸️ 未验证：真浏览器里「off 关法」下拉与角标的观感（开不了调试端口的浏览器）；
+  **公网尚未重新发布**（按规矩等用户在本轮明确说「发布」）。
+
+---
+
+## 第 16 批：给"以后新加的模型"上保险 —— 家族级风险旗标（2026-10-15）
+
+**起因（用户提问）**：「模型库中现有的几个模型都已经添加了对应的参数了吗？后续如果我增加了新的模型，
+这些参数是否还适用？」核查后确认两件事：① 参数不是逐条写死的，而是运行时按「模型家族 × 托管网关」
+算出来的（`thinking_off_mode` 只有智谱那条是手动覆盖）；② 家族级宽匹配**挡不住同族新出的强制思考型号**
+—— 假想的 `glm-5.4` 会因家族命中 `glm` 被判「实测可关」→ 硬发 → 400。用户选 **A 方案**。
+
+### 改了什么
+
+- `app/providers.py`：新增两张表 + 一个分支
+  - `THINKOFF_FAMILY_RISK`：(网关, 家族) → 为什么危险。四处 = 智谱+glm、腾讯+kimi、
+    百炼+deepseek、官方+deepseek（族里都有"关不掉"的型号）。
+  - `OFF_VERIFIED_MODELS`：(网关, 家族) → (型号片段, 依据等级, 证据)，即**点名核对过**的白名单。
+  - `thinking_off_plan()` 在「家族级实测表」**之前**先拦这道：风险家族里命中白名单 → 照发；
+    没命中 → `supported=None`（未核实，什么都不发）+ 说明「同族新模型不敢自动关，请手动指定」。
+  - 文件头补第 3 条规则注释，防后人又改回纯宽匹配。
+- `tools/_check_off_plan.py`：升级成**常备命令** —— 加 `--model provider:model`（可重复），
+  预演还没进模型库的新模型；末尾打印风险家族清单与已核对片段。
+- `tools/selftest.py`：+4 条断言（2a-3 段）锁住 A 的行为。
+- 文档：`README.md` 的速度表**改成按模型的现状**（旧表还写着「智谱/DeepSeek 关不掉」，那是第 14 批前
+  被实测推翻的过期结论）、第 22 坑补风险旗标 + 预演命令、自查命令段加两条；
+  `PROBE.md` 新增 3.1 节（风险家族表 + 预演实测结果）。
+
+### 验证
+
+- `tools/selftest.py` **274/274**（原 270；+4 条）。
+- `tools/_test_cards.js` **589/589**（前端没改，跑一遍确认没连带损坏）。
+- `tools/_check_off_plan.py`：**现有 10 条模型判定零回归**（8 条真实模型结论与改前逐字一致）。
+  预演：`glm-5.4` ❔ 拦住 / `glm-4.7-air` ✅ 发 / `kimi-k4` ❔（风险族）/
+  `qwen3.9-flash`、`doubao-seed-3-0-pro` ✅ 免配置生效 / `ark:grok-4`、新网关 ❔ 不发。
+- 服务已重启（旧会话后台任务随之结束，属预期）；`/admin` 与 `/` 均 200。
+- ⏸️ **公网未重新发布**（按规矩等用户在本轮明确说「发布」）；真浏览器观感仍未验证。
+
+
+
+
+
+
 
 
