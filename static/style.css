@@ -401,8 +401,70 @@ textarea { resize: none; line-height: 1.6; }
   flex-direction: column;
   gap: 8px;
 }
-.host-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.host-input-row { display: flex; gap: 8px; align-items: flex-end; position: relative; }
 .host-input-row textarea { flex: 1; max-height: 120px; padding: 7px 10px; }
+
+/* @ 补全浮层（2026-10-16 第 23 批）：在输入框里打 @ 时贴着输入框下方弹出。
+   ⚠️ 必须向下（top）：输入框在 .col-center 顶部，向上弹（bottom）会被
+   .col-center { overflow: hidden } 整块裁掉 —— 用户实测一颗候选都看不见（第 23 批修正）。
+   候选顺序 = 在线真人 → 已启用模型，与 app.js 的 atCandidates() 完全一致。
+   ⚠️ 下面的选择器被 tools/_test_cards.js 的 A23 节断言，改名要同步改断言。 */
+.at-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--panel);
+  border: .5px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 30;
+}
+.at-menu[hidden] { display: none; }
+.at-menu-head {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 4px 8px 2px;
+}
+.at-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.at-item.on, .at-item:hover { background: var(--accent-bg); }
+.at-kind {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--dot-off); flex: 0 0 auto;
+}
+.at-kind.user { background: var(--wood); }        /* 真人：木色圆点 */
+.at-kind.model { border-radius: 2px; background: var(--accent-dim); }  /* 模型：方形 */
+.at-item .at-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.at-item .at-sub { font-size: 11px; color: var(--text-3); flex: 0 0 auto; }
+.at-tag {                                          /* 消息正文里的 @某某 */
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.at-flag {                                         /* 右侧真人名单的「被点名」 */
+  font-size: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+}
+
 .host-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .host-actions .group { display: flex; align-items: center; gap: 6px; }
 .host-actions label { font-size: 11px; color: var(--text-2); }
@@ -922,4 +984,93 @@ button, input, select, textarea {
   button, input, select, textarea, .room, .navitem, .rblock-head, .card, .person,
   .trash-item, .chip, .status, .me, .room-code, .badge, .badge-owner, .tag-warn,
   .dot, .pdot, .msg-acts, .info-idx { transition: none; }
+}
+
+/* ---------------- 房间级「规则 / 角色」弹窗（2026-10-15 第 17 批）----------------
+   规则可逐条增删、角色可自建，都是「一条一张小卡」的形态，所以给 .scope-item 一套
+   轻量的卡片内布局；输入框全部沿用主题变量，深浅色模式自动跟着走。 */
+#dlgScope { max-width: 720px; }
+.tag { flex: none; font-size: 10px; line-height: 15px; padding: 0 6px;
+  border-radius: 999px; color: var(--text-3); background: var(--panel-2); white-space: nowrap; }
+.scope-sec { display: flex; flex-direction: column; gap: 7px; }
+/* 第 20 批修正：上面这条作者样式的 display:flex 会压过 hidden 属性的默认 display:none
+   （作者样式永远赢 UA 样式），导致「只改规则 / 只改角色」时另一段照常显示 —— 用户实测报的。
+   与 .gate[hidden] / .me[hidden] 等既有写法保持一致，显式补一条。 */
+.scope-sec[hidden] { display: none; }
+.scope-sec .col-head { padding: 0; border-top: 0; }
+.scope-item { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; }
+.scope-item .card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.scope-item .tip { font-size: 10px; color: var(--text-3); line-height: 1.6; }
+.scope-rule, .scope-r-prompt, .scope-r-name, .scope-r-group {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; line-height: 1.7;
+  padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card-bg); color: var(--text);
+}
+.scope-rule, .scope-r-prompt { resize: vertical; }
+.scope-rule:focus, .scope-r-prompt:focus, .scope-r-name:focus, .scope-r-group:focus {
+  outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* ==================================================================
+   第 24 批（2026-10-16）：队列循环制带来的三处新外观
+     ① 消息左右分栏   —— 我自己的发言靠左，其他真人 + 所有模型靠右
+     ② 拖拽排序       —— 右栏模型卡顺序 = 发言顺序
+     ③ @真人提醒闪烁  —— 配合一声「叮」（声音在 app.js 里用 Web Audio 合成）
+   ================================================================== */
+
+/* ---- ① 消息左右分栏 ----
+   .messages 是 flex 纵向容器：align-self 让每条发言按左 / 右贴边，
+   宽度随内容收缩（上限 82%），不再像以前那样左右都通栏。 */
+.msg { max-width: 82%; }
+.msg.mine  { align-self: flex-start; }   /* 我说的 → 左 */
+.msg.other { align-self: flex-end; }     /* 其他真人 / 模型说的 → 右 */
+/* 气泡底色区分「我说的 / 别人说的」。原来的「左侧竖线」在左右分栏下会跑到气泡外缘，
+   这里显式覆盖成 0（顺序在后，同优先级后者胜）。 */
+.msg.host, .msg.host.me { border-left: 0; padding-left: 0; }
+.msg-body { padding: 7px 11px; border-radius: 11px; background: var(--panel-2); }
+.msg.model .msg-body { background: var(--panel-2); }
+.msg.host.mine .msg-body { background: var(--accent-bg); }
+.msg.host.other .msg-body { background: var(--wood-bg); }
+/* 靠右的发言：头部（姓名 / 时间）也跟着靠右，读起来才不别扭 */
+.msg.other .msg-head { justify-content: flex-end; }
+.msg.other { align-items: flex-end; }
+.msg.other .msg-body, .msg.other .reason { text-align: left; }
+
+/* ---- ② 拖拽排序（房主把模型卡拖成发言顺序） ---- */
+.drag-handle {
+  flex: none; cursor: grab; user-select: none;
+  color: var(--text-3); font-size: 13px; line-height: 1;
+}
+.drag-handle:active { cursor: grabbing; }
+.ord {
+  flex: none; min-width: 15px; height: 15px; line-height: 15px; text-align: center;
+  font-size: 10px; border-radius: 5px; background: var(--panel-2); color: var(--text-2);
+}
+.card.dragging { opacity: .5; }
+/* 插到这一位「前面 / 后面」的落点提示：用内阴影画一条主色横线 */
+.card.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); border-color: var(--accent-line); }
+.card.drop-after  { box-shadow: inset 0 -2px 0 0 var(--accent); border-color: var(--accent-line); }
+/* 「正在发言的这位」高亮 */
+.card.speaking { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+/* 每张模型卡上的「首字超时」输入（只有房主看得到） */
+.card-timeout { display: flex; align-items: center; gap: 5px; margin-top: 5px; font-size: 11px; }
+.card-timeout label { font-size: 11px; color: var(--text-3); }
+.card-timeout input { width: 52px; padding: 3px 6px; }
+
+/* 控制条右侧那句说明 */
+.runhint { font-size: 11px; color: var(--text-3); margin-left: auto; }
+
+/* ---- ③ @真人提醒闪烁（响铃在 app.js） ---- */
+.person.flash {
+  border-color: var(--accent);
+  animation: flash-person .6s ease-in-out 0s 6;
+}
+@keyframes flash-person {
+  0%, 100% { background: var(--card-bg); }
+  50% { background: var(--accent-bg); }
+}
+
+/* 「减少动态效果」时：闪烁改成常亮的静态高亮，不放动画 */
+@media (prefers-reduced-motion: reduce) {
+  .person.flash { animation: none; background: var(--accent-bg); }
 }

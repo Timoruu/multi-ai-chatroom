@@ -65,6 +65,8 @@ def run_store(root: str):
         'from app.config_store import ConfigStore, ROOM_INDEX_PATH, CONFIG_PATH, read_rooms_from_disk\n'
         's = ConfigStore()\n'
         'out = {"rooms": s.rooms(), "from_disk": read_rooms_from_disk(),\n'
+        '       "rules": s.default_rules(),\n'
+        '       "config_keys": sorted(json.load(open(CONFIG_PATH, encoding="utf-8")).keys()),\n'
         '       "index_exists": os.path.exists(ROOM_INDEX_PATH),\n'
         '       "config_has_rooms": "rooms" in json.load(open(CONFIG_PATH, encoding="utf-8")),\n'
         '       "config_path": CONFIG_PATH, "index_path": ROOM_INDEX_PATH}\n'
@@ -119,6 +121,16 @@ try:
           [p['model_ref'] for p in by_id['room-default']['participants']] == ['m1'])
     idx = json.load(open(r1['index_path'], encoding='utf-8'))
     check('index 里带 _README 说明', isinstance(idx.get('_README'), str) and idx['_README'])
+    # 第 17 批：老的「一整串」规则要迁成逐条结构（并把老键摘掉）
+    check('config.json 已无 shared_prompt、改出 rules',
+          'rules' in r1['config_keys'] and 'shared_prompt' not in r1['config_keys'],
+          str(r1['config_keys']))
+    check('老规则原文搬进 rules.preamble（没丢东西）',
+          (r1['rules'] or {}).get('preamble') == '规则原文',
+          str(r1['rules'])[:100])
+    check('每个房间都补上了房间级 rules / roles',
+          all('rules' in x and 'roles' in x for x in r1['rooms']),
+          str([sorted(x.keys()) for x in r1['rooms']])[:140])
 
     # ---------- ③ 幂等（就地再跑一次）----------
     print('\n=== ③ 幂等：同一个目录再跑一次 ConfigStore ===')
@@ -146,6 +158,12 @@ try:
     check('补出来的默认房没有模型参与者（等房主自己加）', d.get('participants') == [])
     check('config.json 依然不含 rooms', r2['config_has_rooms'] is False)
     check('index 已落盘', r2['index_exists'])
+    check('全新安装也有 rules（空规则，不是没有这个键）',
+          'rules' in r2['config_keys'] and (r2['rules'] or {}).get('items') == [],
+          str(r2['rules'])[:80])
+    check('新补的默认讨论室也带房间级 rules / roles',
+          (r2['rooms'] or [{}])[0].get('rules') is None
+          and (r2['rooms'] or [{}])[0].get('roles') == [])
 
     # ---------- ④ config.json 被"公网副本"覆盖后，房间应活着 ----------
     print('\n=== ④ 模拟公网重发布：把 config.json 换成"本地那份"（不含 rooms）===')

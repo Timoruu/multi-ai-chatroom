@@ -1,0 +1,13 @@
+# 镜像里不该出现的东西（含密钥 / 个人数据 / 本地垃圾）
+.git
+.gitignore
+config.json
+data/
+__pycache__/
+*.pyc
+.deploy/
+.venv/
+_*.log
+_*.txt
+# 开发期一次性脚本不进镜像（运行时只需要 app/ static/ run.py config.example.json）
+tools/_*.py

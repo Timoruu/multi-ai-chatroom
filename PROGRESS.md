@@ -2,7 +2,7 @@
 
 > **这是"活文件"，每次收工前必须更新。**
 > 它记录的是**现在做到哪一步了**；设计目标、硬需求、验收标准看同目录的 `BRIEF.md`。
-> 最后更新：2026-10-15 第十一批（把「跳过失败」版发布公网，并保住线上独有房间）
+> 最后更新：2026-10-19 第二十六批（**@ 几位模型就说几位**：修掉「前端只把 @ 列表第一位传给后端」+「暂停下只服务一位」两处叠加 —— 用户报「@ 多个模型只有第一个回答」；**已发布公网**）
 
 ---
 
@@ -17,13 +17,80 @@
 **回收站按人隔离 + 无系统回收站也能彻底删除 + `/admin` 房间库**（10-15 第七批）、
 **外观「青瓷雅致」**（10-15 第九批）、**单个模型调用失败 → 跳过它、下一位继续**（10-15 第十批）、
 **「回答太慢」的两处页面开关**（10-15 第十二批：思考档位加 `off` 档 / 间隔下限由 3 秒放宽到 0.5 秒）、
-**模型参数悬停说明气泡**（10-15 第十三批）。
+**模型参数悬停说明气泡**（10-15 第十三批）、
+**规则 / 角色下沉到房间级**（10-15 第十七批：后台只管默认，房主在自己房间里改）、
+**房间规则 / 角色随时可改**（10-15 第十八/十九批：修改入口在左栏「规则」「角色」区块、
+房间控制条与「房间设置」；房间卡不再放按钮）、
+**规则与角色的「修改」按钮分开**（10-15 第二十批：左栏「规则」的「修改」只改规则、
+「角色」的只改角色，各进只显示自己那一段的弹窗）、
+**模型默认 off/low + max_tokens 1000 且发布不再覆盖线上 config.json**（10-16 第二十一批）、
+**停用的参与者不能再被手动点名**（10-16 第二十二批）、
+**输入框 @ 补全（在线真人 + 已启用模型）**（10-16 第二十三批）、
+**对话模型整体改成「队列循环制」**（10-16 第二十四批，详见文末那一节）。
 
-最近一次改动 = **10-15 第十三批**（详见文末那一节）：
+最近一次改动 = **2026-10-19 第二十六批**（详见文末那一节）：
+用户原话：「**@ 多个模型，为什么只有第一个模型回答**」（默认讨论室，@deepseek @doubao，
+只有 deepseek 开口）。两个原因叠加：① 房间处于**已暂停**，暂停下循环只服务一位被 @ 的模型；
+② 前端 `sendHostMessage` 只把 `men.models[0]` 传给后端，doubao 压根没进队列。
+
+再往前 = **2026-10-19 第二十五批**（详见文末那一节）：
+用户原话：「**这里模型的回答为什么会有一个不在线的真人用户**」（截图：模型接龙时点名了不在线的
+「旺袅袅」，右栏红框正是她）。真因：提示词里那段真人名单取的是**成员表**（所有进过房间的人），
+不是"当前在线"，模型根本不知道谁下线了。改法：把这段拆成纯函数 `app/prompt_text.py`，
+按 `main.py` 的 `_online_uids()`（= 右栏在线圆点同一套判定）分成**在线 / 不在线**两组，
+并要求模型优先回应在线的人；每次发言实时重算。
+
+再往前 = **2026-10-16 第二十四批**（详见文末那一节）：
+用户原话：「**模型整体的逻辑改下：取消自动发言和手动发言的区别，一律按照下面的规则来**」——
+真人一发言就开队列，模型**串行**一位一位接着说（**开口前重读全部历史**）、
+**多模型无波次上限持续循环**、**真人随时可暂停**（当前那位说完才停）、
+**首字超时按参与者配**（默认 60 秒、3~600 秒可调）、**顺序由房主拖动排序**；
+旧的轮次 / 轮内间隔 / 自由讨论 / 指定总结 / 启动新一轮 / 停止发言 / 自动轮流开关**整体删除**。
+这一批动的是"怎么发言"的地基，前端控件换了一整轮。
+
+再往前 = **2026-10-16 第二十三批**（详见文末那一节）：
+用户原话：「**用户在输入框可以直接 @ 房间中的所有在线参与者，包括在线真人和启动的模型。**」
+打 `@` 弹候选（在线真人 + 已启用模型，分两组）→ 打字过滤 → `↑↓`/`Enter`/`Tab`/`Esc`/鼠标选择 →
+插入 `@某某`。**@模型** 排本轮第一位（老语义不变）；**@真人** 只做高亮 + 右侧「被点名」标记。
+🔴 真人 uid **绝不进 `point_at`**（进去会被 `_speak()` 当模型 resolve，报「不在模型库里，已跳过」、
+白白跳掉第一位），前端只取 `men.models[0]`、服务端再校验一道。
+本批还**顺手修掉一个既有 bug**：`roomParticipants()` 少了 `model_ref`，害得「总结者」下拉值变空串、
+消息上「让…回应这条」的 `modelRef` 为空（**这条一直是坏的**）。
+
+再往前 = **2026-10-15 第十九批**（详见文末那一节）：
+用户原话：「**房间修改规则和角色这里非要做的这么拥挤吗，聊天室左侧下面不是有规则和角色吗，直接在这里查看和修改就行。**」（附截图：房间卡上 复制/重命名/规则角色/删除 挤成两行）
+本批**撤掉房间卡上的「规则/角色」按钮**（卡片回到 复制 / 重命名 / 删除），
+把「修改」放进**左栏「规则」「角色」两个区块的标题栏** —— 那里显示的就是当前生效值，
+点「修改」直接进原来的弹窗；权限不变（房主 且 非无主房间），保存仍按目标房间提交。
+控制条上的「规则 / 角色」与「房间设置 → 本房间规则 / 角色」保留。
+
+再往前 = **2026-10-15 第十八批**（详见文末那一节）：
+用户原话：「**再增加，房间中的规则和角色可以随时调整，不仅仅是在创建房间的时候设置。**」
+改之前入口只在「房间设置」弹窗里，可见性还是 `iAmOwner() && !room.no_owner` ——
+`iAmOwner()` 是「**我此刻已进入的那个房间**的房主态」，于是「自己建的房间、人没进去 /
+人在别的房间」时入口被藏起来；`openScopeDialog()` 又一律读 `S.roomId`（当前所在房间），
+从列表进还可能**改到别的房间**。本批：① 权限改判 **`myKeys[room.id]`**（有没有这一间的房主钥匙）；
+② 弹窗按**目标房间**读/存（`S.scope.roomId`，`saveScope` PATCH 该房间）；③ 新增**两个随时可用的入口**
+（房间卡「规则/角色」+ 房间控制条「规则 / 角色」，无主房不给）；④ 新建对话框里那个旧入口**隐藏**
+（房间还没建出来，它原来会误改「当前房间」）。三个入口进同一个弹窗。
+
+再往前 = **2026-10-15 第十七批**（详见文末那一节）：
+用户要求「**规则和角色设置成房间级别的**，房主可以自己定义规则和角色，可以删 / 加默认规则、
+可以加新角色、**不能删默认角色**；`/admin` 只管默认的规则和角色」。落地为**两层模型**：
+后台默认（`config.json`）＋ 房间级（`data/room_index.json`），生效值 = **房间有则用房间、没有则用默认**。
+规则由「一整串 `shared_prompt`」改成**逐条 `rules[]`**（便于一条条增删）；角色按**存放位置**区分
+默认 / 房间自建，所以**默认角色物理上删不掉**。房主入口 = 房间设置里的「规则与角色」弹窗；
+无主房间（默认讨论室）只读跟默认（服务端 403）。三个口径（**首次编辑即固化 / 默认角色完全只读 /
+默认房只读**）均已与用户确认。
+
+再往前 = **10-15 第十三批**：
 用户要求「更新到公网 + 给模型相关参数（如 `temperature` / `max_tokens`）加说明，鼠标悬停时显示」。
 ① 在 `/admin` 的模型编辑弹窗里给 6 个参数加了 **`?` 悬停气泡**（纯 CSS `content: attr(data-tip)`，
 不写死颜色、支持键盘聚焦）；② 走标准流程**重新发布公网**，线上验收 **全项 PASS / `EXIT=0`**
 （含本次新增的第 9 节断言：线上确实有 6 个气泡 + `off` 档 + 间隔下限 0.5）。`_test_cards.js` **575/575**。
+
+⚠️ 顶部这段「最近一次改动」在**第十四～十六批期间漏更过**（那几批只写了文末小节）。
+以**文末最后一个小节**为准；这里只保证不落后于最新一批。
 
 上一批 = **10-15 第十二批**：
 用户报「模型回答非常慢，远不如网页版快」。用**三段计时**（首字 / 首正文 / 总时长）量化定位到
@@ -1136,14 +1203,14 @@ CSS 里的**选择器名一个都没改**，所以现有测试断言零打红。
 
 ```powershell
 # 0) 先看线上，并写出最新快照（必须带 --out，否则读到的是上一轮的旧文件）
-python tools\_probe_online_rooms.py --out tools\_online_rooms.json
+python tools/_probe_online_rooms.py --out tools/_online_rooms.json
 # 1) 重建发布副本，把「线上独有房间」并进迁移载荷（按 id 去重，只补本地没有的）
-python tools\make_deploy_copy.py --merge-rooms tools\_online_rooms.json
+python tools\make_deploy_copy.py --merge-rooms tools/_online_rooms.json
 #    → 打印：迁移载荷房间 1 个：room-default / 其中并入的线上独有房间：今晚吃什么-8417b1
 # 2) 用内置「发布为应用」发布 output/.deploy/multi-ai-chatroom/
 #    （复用现有 app：updateExistingApp + userAskedToPublish；python / pip install -r requirements.txt / python run.py）
 # 3) 线上全量验收
-python tools\_verify_public_full.py
+python tools/_verify_public_full.py
 ```
 
 `--merge-rooms` **是安全操作**：线上已有索引时它是**无害 no-op**；线上没有索引时它起保护作用。
@@ -1437,6 +1504,93 @@ kimi-k3 的 low 有效（978→34）；方舟 low 只小幅降档（1171→718�
 - 服务已重启（旧会话后台任务随之结束，属预期）；`/admin` 与 `/` 均 200。
 - ⏸️ **公网未重新发布**（按规矩等用户在本轮明确说「发布」）；真浏览器观感仍未验证。
 
+---
+
+## 第 17 批：规则 / 角色下沉到房间级（2026-10-15）
+
+**需求原话**：「规则 和角色 增加 设置成 房间级别的，房主可以自己定义规则和角色，可以删除和增加默认的规则，
+可以增加新的角色，**不能删除默认角色**。admin 后台只管理默认的规则和角色。」
+
+即把原来「全站一份共享提示词 + 全站一个角色库」拆成**两层**：
+**后台默认**（管理员在 `/admin` 维护）＋ **房间级**（房主在自己的房间里改）。
+
+### 三个先商定再动手的口径（用户逐个确认）
+
+1. **房间规则和全局默认怎么关联 → 首次编辑即固化**：房主一编辑，就把当时的默认**复制成房间自己的一份**，
+   之后不再跟随默认；房间里留一个「恢复为默认」按钮，点了就清回 `null`、重新跟随后台。
+2. **房主能不能改「默认角色」的提示词 → 完全只读**：默认角色在本房间**只能选用**（`role_override`），
+   不能改、不能删。房主要新角色，就「新增」一个房间自建角色。
+3. **默认讨论室（无主房间）的规则/角色谁能改 → 只读、跟默认**（服务端直接 403）。
+
+### 数据模型（关键设计）
+
+- **规则**：`shared_prompt`（一整串 344 字）→ `rules = {_note, preamble, items:[{id,text}]}`。
+  拆成**逐条**是为了能在 `/admin` 与房间里一条条增删。
+- **两层存放**：默认在 `config.json`（`rules` / `role_presets`）；房间级在 `data/room_index.json`
+  每条房间的 `rules`（默认 `null` = 跟随）/ `roles`（默认 `[]`）。
+  **生效值 = 房间有则用房间，没有则用默认**。
+- **默认角色为什么删不掉**：不靠布尔标记，靠**存放位置**区分 —— 默认角色永远在 `config.json`，
+  房间只存「自己新建的角色」；前端永远不会把默认角色提交成「房间角色」，所以物理上删不掉。
+- **配置 / 数据分界**：`config.json` 属配置（重发布会覆盖）；`data/` 属数据（不覆盖）。
+
+### 改了什么
+
+- `app/config_store.py`：新增 `_RULE_MARK_RE` / `split_shared_prompt()`（**finditer 版，见下坑**）/
+  `clean_rules()` / `rules_to_text()` / `clean_roles()`；新增 `_backfill_scope()` 迁移
+  （把老 `shared_prompt` 拆成 `rules`、给每条房间补 `rules/roles`）；新增一组取值函数
+  `default_rules / room_rules / effective_rules / rules_text / room_roles / effective_roles / role_map / role_of`；
+  `set_shared_prompt` → `set_default_rules`；`update_room` 支持 `rules` / `roles`。
+- `app/main.py`：`POST /api/prompt` 改收 `rules` 结构体；`PATCH /api/rooms/{id}` 非房主改
+  `name/participants/rules/roles` 一律 403；**无主房间改 `rules/roles` 也 403**（明确文案）。
+- `app/orchestrator.py`：`_build_messages` 的 `shared_prompt()` → `rules_text(room_id)`（按房间取生效规则）。
+- `static/app.js`：左栏规则/角色区改为显示**房间生效值** + 来源提示（`#rulesSrc`/`#rolesSrc`）；
+  新增「规则与角色」弹窗（`canEditScope / openScopeDialog / renderScope / collectScope / saveScope`）。
+- `static/index.html`：新增 `dlgScope` 弹窗；房间设置弹窗加「规则与角色」入口按钮。
+- `static/style.css`：`#dlgScope` 与 `.scope-*` 一组样式（走主题变量）。
+- `static/admin.js` / `admin.html`：规则区改成**逐条卡片列表**（`rulesPreamble` + `rulesEdit` + `btnRuleNew`）；
+  标题明确为「默认规则 / 默认角色」。
+- 工具：`selftest.py`（+§6b-2 房间级断言）、`_probe_admin.py`（探针改结构体）、
+  `_test_rooms_migration.py`（迁移补断言）、`_smoke.py`（补 scope 元素）、`_test_cards.js`（+房间级断言）。
+
+### 🔴 本轮抓到的两个坑（都写进代码注释了）
+
+1. **零宽断言拆条会把两位序号切坏**：最初用 `re.split(r'(?=\d+\)\s)', text)` 拆规则 ——
+   `(?=...)` 是**零宽**，切完后指针只前进 1 个字符，于是 `10)` 的 `1` 被当成下一个分隔点，
+   规则 9 / 10 的结尾各多一个游离的 `1`（例：`…不必再说；1`）。
+   改成 `_RULE_MARK_RE.finditer()`（`(\d+)\)\s`）**只推进到 `m.end()`** 才正确。
+   迁移完成后核对：`rules.items` = **11 条、无残尾**。
+2. **`_probe_admin.py` 的老断言（令牌 / 409 占用）是第 24 批之前的口径**：
+   这类「改数据模型打红老断言」按老规矩处理 —— **红的是断言不是代码**，
+   已按当前「昵称即身份、免令牌、跨浏览器同一个人」重写第 5/6 段。
+   顺带修掉 `clean_ws_member()` **读错文件**（房间已迁到 `data/room_index.json`，
+   老写法只读 `config.json` → 永远读到空列表 → 静默跳过清理、在默认房留残员）。
+
+### 验证（全部在本机实跑）
+
+- `tools/selftest.py` **289/289**（§6b-2 新增一组房间级断言：默认规则结构化 / 拆条不被两位序号切坏 /
+  无 `shared_prompt` / 每房间带 `rules`+`roles` / 无主房 `rules=null` / 房主能固化与恢复 /
+  非房主 403 / 无主房 403）。
+- `tools/_test_cards.js` **636/636, 0 fail**（前端契约）。
+- `tools/_probe_admin.py` **全部通过**（改断言后由 4 红 → 0 红；清理逻辑也修好了）。
+- `tools/_smoke.py` 通过；`tools/_test_rooms_migration.py` **全部通过**
+  （老项目迁移 / 全新安装 / 幂等 / 重发布不丢房间，含第 17 批的 `rules` 断言）。
+- `tools/_verify_public_full.py` 新增**第 12 节**（第 17 批线上标记，14 条：
+  无 `shared_prompt` / 结构化 `rules` / 拆条无残尾 / `role_presets.items` 结构 / 每房间 `rules`+`roles` /
+  默认房 `rules=null` / 首页弹窗元素 / `/admin` 逐条编辑区 / `#dlgScope` 样式 /
+  不带令牌 `POST /api/prompt` 401）。
+  ⚠️ 只做了「语法检查 + 对本地服务预演」，而预演只覆盖了几个 HTML/CSS 标记，
+  **没预演到 `role_presets.items` 的类型** → 首次线上跑红 1 条（我写成 dict，实际是**角色数组 list**）。
+  核实三处（本地磁盘 / 发布副本 / 线上 API）结构一致后**改断言**（不是改代码）→ 再跑 **79/79 全绿**。
+  **教训：预演要覆盖全部断言，别只挑"看得见"的那几个。**
+- ✅ **2026-10-15 已发布公网**（沙箱 id `a2f69d8a…`、链接不变 https://multi-model-chatroom.app.workbuddy.host/）：
+  `make_deploy_copy.py --merge-rooms tools/_online_rooms.json`（17 文件、5 家 Key、迁移载荷含
+  `room-default` + 线上独有的 `今晚吃什么-8417b1`）→ 重新发布 → **线上验收 79 PASS / 0 FAIL**。
+  线上实测：`rules.items` 11 条无残尾、`shared_prompt` 已消失、`role_presets.items` 13 条、
+  每房间带 `rules`/`roles`、默认房 `rules=None`、`dlgScope` 元素齐、无令牌 `POST /api/prompt` 401；
+  **线上独有房间未被覆盖**（第 8 节，成员仍在）。
+- 🆕 **发布口径已改（用户 2026-10-15 定）**：原话「发布到公网，**后续的修改直接发布到公网**」——
+  以后改完本地**直接**重建副本 → 发布 → 跑线上验收，**不必每轮再问一次**。
+- ⏸️ 仍未 **git 提交**（等用户说「提交」）；真浏览器里弹窗观感仍未验证。
 
 
 
@@ -1444,3 +1598,443 @@ kimi-k3 的 low 有效（978→34）；方舟 low 只小幅降档（1171→718�
 
 
 
+
+
+---
+
+## 第 18 批（2026-10-15）：房间的规则 / 角色「随时可改」
+
+**用户原话**：「再增加，房间中的规则和角色可以随时调整，不仅仅是在创建房间的时候设置。」
+
+### 改之前为什么不行
+- 入口只在**房间设置**弹窗里，可见性用 `canEditScope() = iAmOwner() && !(room && room.no_owner)`，
+  而 `iAmOwner()` 是「**我此刻已进入的那个房间**的房主态」（`S.isOwner`）—— 于是
+  「自己建的房间、人没进去 / 人在别的房间」时，**入口被藏起来**（属功能不可达，不是理解问题）。
+- `openScopeDialog()` 取的是 `findRoom(S.roomId)`（**当前所在房间**），从列表侧进来还可能**改到别的房间**。
+- `newRoom()` 里那个入口**从来没隐藏过**，但它指向的也是「当前房间」：没进房点了没反应，
+  人在别的房里点一下会**误改那一间**。等于「创建时设置」这条路其实一直是坏的。
+
+### 改了什么（`static/app.js` + `static/index.html`）
+1. **权限改判**：`canEditScope(room) = !!(room && !room.no_owner && myKeys[room.id])`
+   —— 看的是「**手上有没有这一间的房主钥匙**」，与「此刻在不在这一间」无关。
+2. **弹窗按目标房间读 / 存**：`openScopeDialog(roomArg)` 目标房间 =
+   `传入的 → findRoom(S.editingRoomId) → findRoom(S.roomId)`；`S.scope.roomId` 记下它，
+   `saveScope()` 按 `rid = S.scope.roomId` 提交。`roomRulesBlock / rulesAreCustom / effectiveRules`
+   都接受可选 `room`（左栏不传 = 当前房间，行为不变）。
+3. **三个随时可用的入口**（都进 `#dlgScope`）：房间卡上的「**规则/角色**」（`.room-acts`，
+   只在 `canEditScope(r)` 时出现）；房间**控制条**上的「**规则 / 角色**」（`#btnRoomScopeBar`，
+   `applyPermissions()` 里 `hidden = !(owner && !ownerless)` → 无主房间不给）；
+   房间设置弹窗里的原按钮（保留，标题带上房间名便于确认改的是哪一间）。
+4. **新建对话框里的旧入口隐藏**（`scopeBtnNew`）—— 房间还没建出来，它没法工作。
+5. ⚠️ **绑定必须包一层**：`addEventListener('click', openScopeDialog)` 会让
+   `openScopeDialog` 的第一个参数收到 **MouseEvent**；改成 `() => openScopeDialog()`。
+6. ⚠️ **别用 `roomById()` 取房间**：它读 `/api/state` **顶层** `rooms`（`_rooms_summary()`，只有列表摘要，
+   **不含 `rules` / `roles`**）；要这两样必须用 `findRoom()`（读 `S.config.rooms` 全量对象）。
+   *（`tools/_probe_room_scope.py` 实测确认：顶层 rooms 无 `rules`，`config.rooms` 有。）*
+
+### 验证
+- `tools/selftest.py` **289/289**；`tools/_test_cards.js` **645/645**（含本批新增 9 条）；
+  `tools/_probe_admin.py` / `tools/_smoke.py` / `tools/_test_rooms_migration.py` 全绿。
+- 🆕 `tools/_probe_room_scope.py`：建房 → 房主 PATCH 房间级 `rules`/`roles` → 磁盘有 →
+  **`config.rooms` 能读回**（`YES`）→ 不泄漏 `code`/`owner_key` → 探针房间自清（回收站条目也彻底删除）。
+- 🆕 `tools/_preview_13.py`：发布前对**本地服务**预演线上第 13 节**全部 9 条**断言（9/9 PASS）。
+- ✅ **已发布公网**（沙箱 `a2f69d8a…`、链接不变）→ `tools/_verify_public_full.py`
+  新增**第 13 节（9 条）**，线上 **88 PASS / 0 FAIL**；线上独有房间 `今晚吃什么-8417b1` 仍在。
+- ⚠️ 过程中 `_test_cards.js` 红过一次：老断言 `/canEditScope[\s\S]{0,80}?room\.no_owner/`
+  是「**80 字符窗口**」grep，被本批变长的注释顶破 —— **红的是断言不是代码**，改稳
+  （窗口放宽 + 校验新语义 `myKeys[room.id]`）后 645/645。
+- ⏸️ 仍未 **git 提交**；真浏览器里点这三个入口的观感仍未验证。
+
+---
+
+## 第 19 批（2026-10-15）：规则 / 角色的修改入口挪进左栏区块
+
+**用户原话**：「房间修改规则和角色这里非要做的这么拥挤吗，聊天室左侧下面不是有规则和角色吗，
+直接在这里查看和修改就行。」（附截图：房间卡上 复制 / 重命名 / 规则/角色 /删除 挤成两行，还把「删除」顶断了）
+
+### 改了什么
+1. **撤掉房间卡上的「规则/角色」按钮**（`data-a="scope"` 及其点击分派一并删除）——
+   卡片回到 复制 / 重命名 / 删除，不再拥挤。
+2. **左栏「规则」「角色」两个区块的标题栏各加一个「修改」按钮**（`#btnEditRules` / `#btnEditRoles`，
+   默认 `hidden`），点击 = `openScopeDialog(findRoom(S.roomId))`，进的就是原来那个弹窗
+   —— 左栏显示的本来就是**当前房间的生效值**，在这里看 + 在这里改，正好对上用户的直觉。
+3. **权限统一成一个变量**：`applyPermissions()` 里 `canEditHere = owner && !ownerless`，
+   同时控制 控制条按钮 + 左栏两个「修改」按钮 —— 房主可见；无主房间（默认讨论室）全不给。
+4. 说明文案同步改掉（不再提「房间卡入口」）。
+
+### 验证
+- `tools/_test_cards.js` **645 → 647/647**（A18 断言改写为 A19：卡片**不再有**该按钮、
+  左栏两个「修改」按钮存在、与控制条按钮同一套权限、无主房间全不给）。
+- `tools/selftest.py` **289/289**；`_smoke.py` / `_probe_room_scope.py`（读回 YES）全绿。
+- 🆕 `tools/_preview_13.py` 预演第 13 节全部 **10** 条断言（10/10）。
+- ✅ **已发布公网**（沙箱 `a2f69d8a…`、链接不变）→ 线上 **89 PASS / 0 FAIL**；
+  线上独有房间 `今晚吃什么-8417b1` 仍在。
+- ⏸️ 仍未 **git 提交**（第 17/18/19 批都攒着，等用户说「提交」）。
+
+---
+
+## 第 20 批（2026-10-15）：规则与角色的「修改」按钮分开、各改各的
+
+**用户原话**：「红框的地方，规则和角色分开，规则的修改按钮只修改规则，」
+（附截图：左栏「规则」「角色」两个区块的「修改」按钮都进同一个两段合一的弹窗，用户希望各改各的）
+
+### 改了什么
+1. **弹窗带 `mode`**：`openScopeDialog(roomArg, mode)` 的 `mode ∈ {'rules','roles','both'}`（缺省 `both`），
+   存进 `S.scope.mode`。左栏「规则」的「修改」传 `'rules'`、左栏「角色」的传 `'roles'`、
+   控制条「规则 / 角色」与「房间设置」不传（= `both`）。
+2. **只显示自己那一段**：弹窗两段给了 id（`#scopeSecRules` / `#scopeSecRoles`），
+   `renderScope()` 按 `mode` 把**对面那一段整个 `hidden`**，标题与说明也按来源换
+   （`本房间规则` / `本房间角色` / `本房间规则与角色`）。
+3. **提交只带自己那一块**：`collectScope()` 按 `mode` 返回 `{rules}` / `{roles}` / `{rules,roles}`；
+   后端 `config_store.update_room()` 本来就**只覆盖请求体里出现的键**（`if 'rules' in patch` / `if 'roles' in patch`），
+   所以「只改规则」的请求**物理上不可能**动到角色（反之亦然）。
+4. 保存成功后的提示文案也按 `mode` 分开（改规则 / 改角色 / 规则与角色；恢复为跟随时另说）。
+
+### 验证
+- `tools/_test_cards.js` **647 → 657/657**（A20：两段 id 存在；左栏两个「修改」按来源传 `'rules'`/`'roles'`；
+  `collectScope` 按 mode 只返回自己那个键；并做了一次**真 DOM 行为**测试 ——
+  只改规则时角色段被隐藏 + 标题变「本房间规则」+ 提交体只有 `rules`，反之对称，`both` 时两段都在）。
+- `tools/selftest.py` **289/289**；`_smoke.py` / `_probe_room_scope.py`（读回 YES、无凭据泄漏）全绿。
+- 🆕 `tools/_preview_13.py` 预演第 13 节全部 **13** 条断言（13/13）。
+- ✅ **已发布公网**（沙箱 `a2f69d8a…`、链接不变）→ 线上 **92 PASS / 0 FAIL**；
+  线上独有房间 `今晚吃什么-8417b1` 仍在。
+- ⏸️ 仍未 **git 提交**（第 17/18/19/20 批都攒着，等用户说「提交」）。
+
+### 20 批修正（2026-10-16，用户实测报「只改其一时另一段照常显示」）
+- **根因不在 JS 在 CSS**：`renderScope()` 确实设了 `secRoles.hidden = onlyRules`，但 `style.css` 的
+  `.scope-sec { display: flex; … }` 是**作者样式**，永远压过浏览器 UA 样式表里的
+  `[hidden] { display: none }` —— `hidden` 属性被静默吃掉，两段照常显示。
+  `_test_cards.js` 只断言了 `.hidden === true`（属性层面），所以没拦住。
+- **修法**：`style.css` 显式补 `.scope-sec[hidden] { display: none; }`（与 `.gate[hidden]` /
+  `.me[hidden]` 等既有写法同一套，这坑项目里踩过多次）。
+- **防回归**：`_test_cards.js` / `_preview_13.py` / `_verify_public_full.py` 各加一条
+  「CSS 必须含这条规则」断言 → 658/658、14/14、线上 **93 PASS / 0 FAIL**。
+- ✅ 2026-10-16 已重新发布公网（沙箱/链接不变），线上独有房间仍在。
+
+---
+
+## 第 21 批（2026-10-16）：模型默认 off/low + max_tokens 1000；**发布不再覆盖线上配置**
+
+**用户原话**：「模型的设置默认都改成低档位，关闭思考，max_tokens 1000。不要每次更新的时候覆盖我的配置」
+用户随后选定两条口径：① 档位 **off 优先，关不掉才用 low**；② **整个 `config.json` 都不再覆盖**。
+
+### 改了什么
+
+1. **模型默认值**（`config.json` + `config.example.json`，只改每个模型块的 `max_tokens` / `thinking_level` 两行）：
+   `max_tokens = 1000`；档位按 `app/providers.py` 的**实测表逐模型判** —— 关得掉的设 `off`，
+   官方明确关不掉（`glm-5.3-flash` 回 400）退到 `low`。结果：**7 个 off + 1 个 low**（mock 两条 low，停用）。
+   ⚠️ 这里吃的是**已有的实测表**，不是新写一套判断 —— off 只在表里 `supported=True` 时才发字段。
+2. **后台表单默认值**：`static/admin.html` 的 `#mMaxTokens` `value=1200 → 1000`；思考档位
+   `off` 选项加 `selected`；`static/admin.js` 两处兜底 `|| 1200 → || 1000`。
+3. 🆕 **发布不再覆盖配置**（本批最重要的一条）：`tools/make_deploy_copy.py` 新增 `--with-config`，
+   并**把默认行为反过来** —— 默认**不往副本里放 `config.json`**（副本从 17 个文件降到 **16 个**）。
+   线上沙箱文件系统是持久的，没有这个文件就不会动线上那份；只有全新沙箱才需要 `--with-config` 推一次。
+4. 新增两个脚本：`tools/_apply_model_defaults.py`（本地批量对齐）、
+   `tools/_apply_online_model_defaults.py`（**走 `/api/models` 改线上**，含 `--show` / `--marker`）。
+
+### 验证
+
+- `tools/_test_cards.js` **658 → 667/667**（A21：后台表单 max_tokens 默认 1000 + 档位默认 off；
+  本地模型库每个模型 `max_tokens==1000`、档位 ∈ {off,low}、至少 6 个 off、`glm-5.3` 必须 low；
+  老的 1200 清干净）。
+- `tools/_preview_13.py` **14 → 21/21**（本地预演第 14 节：表单默认值 + 模型库默认值，含登录取管理员口径）。
+- `tools/selftest.py` **289/289**；`_smoke.py` 通过。
+- ✅ **已发布公网**（沙箱/链接不变）→ `tools/_verify_public_full.py` **93 → 100 PASS / 0 FAIL**；
+  线上独有房间 `今晚吃什么-8417b1` 仍在。
+- 🔬 **「不再覆盖」是实测过的，不是嘴上说的**：发布前先在线上把 `qwen-flash.max_tokens` 改成 **1234**
+  当标记 → 发布（不带 config.json）→ 复查线上**仍是 1234**（若按老流程，这里一定会被本地值盖回 1000）
+  → 再把标记还原成 1000。线上独有房间 + 线上模型设置都活着。
+- ⏸️ 仍未 **git 提交**（第 17~21 批都攒着，等用户说「提交」）。
+
+## 第 22 批（2026-10-16）：停用的参与者不能再被手动点名
+
+**用户原话**（截图红圈）：「见红色圈主部分，混元模型未启动，但是手动点发言还是会生效。」
+
+### 真因
+
+`app/orchestrator.py` 的 `point_speaker()` **只查了模型库**（`self.store.resolve(model_ref)`），
+**没查本房间参与者名单里的 `enabled`**。自动轮流那条路是有过滤的
+（`resolve_room_participants()` 里 `if not p.get('enabled', True): continue`），
+手动点名这条路漏了 → 房间里显示为「停用」的模型照样能被点开口。`summarize()` 有同样的问题。
+
+### 改了什么
+
+1. **`point_speaker()` 补房间级护栏**（口径与自动轮流对齐）：先在 `room.participants` 里按
+   `model_ref` 找这个人 ——
+   - 找不到 → `{'ok': False, 'error': '这位不是本房间的参与者，点不了「发言」（先在右侧「添加模型」把他拉进来）'}`
+   - 找到但 `enabled:false` → `'「显示名」在这个房间里是停用状态 —— 先点他卡片上的「启用」，再点名发言'`
+2. **`summarize()` 同口径**：停用的参与者不能当总结人（`先启用他，或在控制条换一位`）。
+3. **`app/main.py` 的 `point` 分支把拒绝原因回弹**：原来 `await orch.point_speaker(...)` 的返回值
+   被直接丢掉 → 用户看到的就是「点了没反应」。现在 `if not _p_res.get('ok'): await _ws_error(ws, ...)`。
+4. **`static/app.js` `renderParticipants()`**：停用参与者的「发言」按钮直接 `disabled`
+   （`title` 说明「这位在房间里是停用状态 —— 先点「启用」再点名」），不只是后端拦。
+   ⚠️ `const off = …` **必须在 `el.className = 'card' + (off ? ' off' : '')` 之前** ——
+   `const` 有 TDZ，写在后面会 `ReferenceError: Cannot access 'off' before initialization`（本批真踩到，
+   被 `_test_cards.js` 的 DOM stub 当场抓住）。
+
+### 验证
+
+- 🆕 **行为探针** `tools/_probe_point_guard.py`：自建临时房间（一位启用 / 一位停用）→ WS join →
+  点停用者必须收到含「停用状态」的 error、点非参与者必须收到含「不是本房间的参与者」的 error →
+  **自清**房间 + 回收站条目 + **昵称账号**（WS join 会往 `data/users.json` 注册昵称，
+  用 `ConfigStore().admin_token()` 自算管理令牌删，不写口令）→ **FAILS=0**，账号表零残留。
+  ⚠️ 探针自身踩的两个坑（都修了）：**中文房间 id 直接拼进 URL** 会让 urllib 抛
+  `UnicodeEncodeError: 'ascii' codec`（工具脚本同样要 `quote`）；`recv_until` 里元组解包自引用 `loop`
+  → `UnboundLocalError`。报告固定写 `tools/_out_probe_point.txt`（PowerShell 管道编码不可靠）。
+- `tools/_test_cards.js` **667 → 680/680**（A22：`point_speaker`/`summarize` 两侧护栏、`main.py` 回弹、
+  「先算 off 再用它」的 TDZ 断言、按钮 `disabled`、真机渲染两张卡片的对比）。
+- `tools/_preview_13.py` **21 → 23/23**（第 15 节：线上 app.js 里 off 的定义位置早于 className +
+  按钮 disabled）。
+- `tools/selftest.py` **289/289**；`_smoke.py` 通过；`make_deploy_copy.py` 16 个文件（仍不带 config.json）。
+- ✅ **已发布公网**（沙箱/链接不变）→ `tools/_verify_public_full.py` **100 → 111 PASS / 0 FAIL**，
+  其中 9 条是**线上真跑的**：建临时房 → `PATCH` 把第二位参与者停用 → `wss` join（房主）→
+  点名停用者被拦 / 点名非参与者被拦 → 删房间 + 清回收站 + 删探针昵称，**线上零残留**。
+- ⏸️ 仍未 **git 提交**（第 17~22 批都攒着，等用户说「提交」）。
+
+---
+
+## 第 23 批（2026-10-16）：输入框 @ 补全（在线真人 + 已启用模型）
+
+用户原话：「**用户在输入框可以直接 @ 房间中的所有在线参与者，包括在线真人和启动的模型。**」
+（先出了 UI 预览 + 两个确认问题，用户选定：**@真人 = 仅高亮提醒**；**候选 = 在线他人 + 已启用模型**。）
+
+### 做了什么
+
+1. **候选浮层**（`static/index.html` 加 `<div id="atMenu">`；`style.css` 加 `.at-menu` 家族；
+   `app.js` 加 `atCandidates / updateAtMenu / renderAtMenu / moveAt / pickAt / closeAtMenu / atQuery`）：
+   打 `@` 弹出 → 打字过滤 → `↑↓` / `Enter` / `Tab` / `Esc` / 鼠标；真人一组、模型一组。
+   **候选用 `mousedown` 拾取**（用 `click` 的话 textarea 会先 `blur`、浮层先关，点不着）。
+2. **候选池口径**：`S.members.filter(m => m.online && m.uid !== S.uid)` +
+   `roomParticipants()`（已启用且还在模型库）。**停用的不进候选**（对齐第 22 批）。
+3. **@真人 vs @模型**：
+   - `parseMentions(text)` 把两者分成 `users` / `models` 两路；
+   - `sendHostMessage()` 里 **`pointAt` 只取 `men.models[0]`**（第一个被 @ 的模型排本轮第一，
+     老语义不变），`mentions` 随消息一起发；
+   - 服务端 `host_message(..., mentions=)` 把 users 过滤到**本房间成员表**、models 过滤到
+     **本房间已启用模型**，并把 `mentions` 存进消息（入库 + 广播）；
+   - 🔴 **`point_at` 必须是已启用模型**（`if point_at and point_at not in ok_models: point_at = None`）——
+     真人 uid 一旦进来，`_speak()` 会当 model_ref 去 `store.resolve()`，报「模型 xxx 不在模型库里，
+     已跳过」，白白跳掉第一位并把整轮搅坏。前端 + 服务端各拦一道。
+4. **正文高亮 + 「被点名」标记**：`highlightMentions()`（**先在原文上按正则切段、逐段 `esc`**，
+   不能先整体 esc；名字拼进正则前 `reEsc()` 转义）；最近一条真人发言的 `mentions.users`
+   → 右侧真人名单打「被点名」角标，他说过一句后自动消失。
+
+### 顺手修掉的既有 bug（`_test_cards.js` 抓出来的）
+
+**`roomParticipants()` 少了 `model_ref`** —— 它返回的是**模型库条目**的合并体，而库条目里
+只有 `id`、**没有 `model_ref`**，于是三处消费方拿到的都是 `undefined`：
+
+1. 控制条「总结者」下拉 `<option value="">` **全是空串**（一直靠服务端 fallback 到
+   `moderator_summary_model_ref` 才勉强能用，「选非默认那位」静默失效）；
+2. 消息上「让…回应这条」发出的 `modelRef` 是空 → 服务端点名直接拒（**这条一直是坏的**）；
+3. 本批新写的 `@` 候选拿不到模型 id。
+
+修法：`roomParticipants()` 里显式补 `model_ref: p.model_ref`（+ 回归断言）。
+
+### 自己写工具的教训（已记进 README 已知坑 24）
+
+字节级补丁脚本**每条替换前必须重读文件**。第一版把「循环开始时读到的旧快照」拿去逐条 `replace`
+后各写一次，**同一文件的多条替换互相覆盖，最后只有最后一条落盘**（`app.js` 只剩 `bind()`，
+页面直接 `ReferenceError: updateAtMenu is not defined`），而**脚本自己报的是全绿**。
+改完必须用**独立脚本**（本批 `tools/_facts.py`）把关键标记逐条核对，**以子进程读到的为准**。
+
+### 验证
+
+- `tools/_test_cards.js` **680 → 733/733**（A23 组：候选过滤、浮层开关/过滤/移动/插入、
+  正文高亮、XSS、被点名标记，外加「`roomParticipants()` 必须带 `model_ref`」回归）。
+- `tools/_preview_13.py` **23 → 29/29**（第 16 节 6 条）。
+- `tools/selftest.py` **289/289**；`_smoke.py` 通过；`make_deploy_copy.py` 16 个文件（仍不带 config.json）。
+- ✅ **已发布公网**（沙箱/链接不变）→ `tools/_verify_public_full.py` **111 → 128 PASS / 0 FAIL**，
+  其中第 16 节 8 条是**线上真跑的**：建临时房 → `wss` join（房主）→ 发一条**故意把真人 uid 塞进
+  `pointAt`** 的发言 → 断言 `mentions.users` / `mentions.models` 各自收对、**没有「不在模型库里，已跳过」**、
+  **脏 `point_at` 被丢弃后没开出任何一轮**（没有 `run_start`）→ 点名真人被拒 →
+  删房间 + 清回收站 + 删探针昵称，**线上零残留**。
+- ⚠️ 浮层在**真浏览器**里的观感未验证（定位 / 宽度 / 圆点辨识度 / `mousedown` 与 `blur` 的先后）。
+- ⏸️ 仍未 **git 提交**（第 17~23 批都攒着，等用户说「提交」）。
+
+### 修正（同日稍晚，用户实测报「@ 看不到参与者」）
+
+- **真因是几何，不是逻辑**：输入框在聊天列（`.col-center`）**顶部**，而浮层写的是**向上弹**
+  （`bottom: calc(100% + 6px)`），`.col-center` 又是 `overflow: hidden` → 浮层整块弹到列顶之上被裁掉，
+  一颗候选都看不见。DOM 断言只验了「hidden=false、有内容」，**不验几何**，所以 733 条没拦住。
+- **修法**：`.at-menu` 改 `top: calc(100% + 6px)` **向下弹**（盖在消息区上，z-index 30）；顺手把补丁
+  脚本写重的第二份 `.at-menu` 样式块**去重**（原来整段 60 行一模一样写了两遍）。
+- 断言升级：`_test_cards.js` 733 → **734/734**（新增「必须 top、禁止再改回 bottom」）；
+  `_preview_13.py` / `_verify_public_full.py` 的浮层样式断言同步改为「top 有 + bottom 无」。
+- ✅ 修正后重新发布（沙箱/链接不变），线上 `style.css` 抽查：1 份 `.at-menu`、top=1、bottom=0；
+  `_verify_public_full.py` 仍 **128 PASS / 0 FAIL**。
+- ⏸️ git 仍未提交（17~23 攒着）。
+
+## 第 24 批（2026-10-16）：对话模型整体改成「队列循环制」
+
+用户原话：「**模型整体的逻辑改下：取消自动发言和手动发言的区别，一律按照下面的规则来**」
+（随后多轮 AskUserQuestion 收敛）。这一批把**「轮次制」整个拆掉**，换成**事件驱动的队列循环**。
+
+### 用户定稿的规格（写在 `app/orchestrator.py` 文件头的九条）
+
+1. **顺序 = 房主手动排序**（右栏**拖动**模型卡 = 写回 `rooms[].participants` 数组顺序）。
+2. **真人发言即触发**：任何真人说一句就开队列；真人消息即时上屏，**不打断**正在说话的模型。
+3. **串行**：同一时刻只有一个模型在思考 / 发言（`await` 串行，物理上不可能并行）；
+   前一个说完，下一个才**基于最新上下文**开始想 —— 这就是用户要的「模型像人，思考完才开口」，
+   也是他自己用**成语接龙**反驳了"并行抢答"之后定下来的（并行的话，后一位的答案是看到前一位答案之前想好的 = 过时）。
+4. **多模型持续发言**：1 → 2 → 3 → 1 … **不设波次上限**，直到真人按「暂停」。
+5. **单模型不循环**：房间里只有 1 个启用模型 → 说完这一句就停，等真人下一句（一人一句）。
+6. **暂停 / 继续**：任何真人都能按「暂停」；按下后**当前这个模型不受影响（说完）**，
+   队列里其余的不再开口；**真人发言不会自动解除暂停**，恢复必须点「继续」。
+   暂停期间**显式 `@` 了某位模型**，那一位仍会开口一次（真人显式指令优先）。
+7. **首字超时（可按参与者单独设）**：`participants[].timeout_ms` → 房间 `debate.model_timeout_ms`
+   → 默认 **60 秒**（`MIN=3000 / MAX=600000`，即 3~600 秒）；等首字超过它 → 判卡住、跳过、队列继续。
+8. **@ 语义**：`@模型` = **插到下一个开口位**（不打断当前）；`@真人` = 只做提醒（响铃 + 闪烁）。
+9. **不要第二道保险**（用户明确）—— 只靠暂停 / 继续控节奏。
+
+### 改了什么
+
+**后端 `app/orchestrator.py`（重写调度核心）**
+- 内存状态从 `round_state` 换成 **`run_state` = `{running, paused, current, cursor, order, jump}`**；
+  轮次号、间隔、`auto_speak`、自由讨论、总结那一整套字段与方法全部删除。
+- WS 指令：`pause` / `resume` / `point` / `clear`；**旧 `stop` 保留为 `pause` 的别名**（向后兼容）。
+  `WS_OWNER_ONLY = {'clear'}`（其余聊天动作成员皆可）。
+- 首字超时：`asyncio.wait_for(it.__anext__(), timeout=ms/1000)`，超时 → 广播提示 → 跳过这位、队列继续。
+- 🐞 **本批自己抓到的真 bug（selftest 第二轮才暴露）**：`@` 点名时如果房间**正处于暂停**，
+  `ensure_running()` 会因为 `paused` 直接返回 False → 被点的那位**根本不开口**（规格第 6 条要求他开口）。
+  修法：`point_model()` 改调 `ensure_running(room_id, **force=True**)`（真人显式指令优先），
+  并在 `_loop` 里补一条「暂停中且没有有效插队 → 直接 break，不要退化成照顺序挑下一位」。
+- 新增**空房间护栏**：房间里没有启用参与者时，`host_message()` 直接广播
+  「这个房间没有可发言的模型 —— 到右侧「本房间参与者」点「添加模型」，或把已停用的参与者启用」，
+  不再静默什么都不发生。
+
+**配置 `app/config_store.py`**
+- 房间 `debate` 块新增 `model_timeout_ms: 60000`（`_default_room()` / `create_room()`）；
+- `_backfill_rooms()` 给缺这个字段的老房间补上（老配置不用手改）。
+
+**前端 `static/app.js` / `index.html` / `style.css`（换了一整轮控件）**
+- 控制条：删掉「自动轮流 / 间隔 / 自由讨论 / 总结者 / 启动新一轮 / 停止」，换成 **「暂停」/「继续」**。
+- 右栏参与者卡片：**可拖动排序**（房主；`draggable` + `moveParticipant`）、新增**「首字超时」输入框**
+  （`data-a="timeout"` → `timeout_ms`），**去掉逐卡「发言」按钮**（点名改走 `@`）。
+- 消息区：**左 / 右分栏**（`.msg.mine` / `.msg.other`，自己发的在左、别人和模型在右）。
+- `@真人`：**响铃（Web Audio 合成）+ 右栏闪烁**（`notifyMentions` / `playNotify` / `.person.flash`）；
+  正在发言的卡片高亮（`.card.speaking`）。
+- 删掉消息上的「让…回应这条」定向回应按钮。
+
+**测试四件套全部改到新契约**
+- `tools/selftest.py`：4a3 房间改成「循环房间」，**断言严格 1→2→1→2 交替**；单模型房断言「恰好 1 条然后停」；
+  新增 `Client.wait_until()` / `drain()` 两个助手（`run_state` / `status` 会反复广播，旧的 `wait()` 会读到缓存里的旧事件）。
+- `tools/_test_cards.js` / `_preview_13.py` / `_smoke.py` / `_verify_public_full.py` 同步改断言，
+  并新增第 17 节（静态标记 + 线上 0 模型房 ws 实测）。
+
+### 验证
+
+- `tools/selftest.py` **296/296**（含暂停 / 继续 / 空房间 / `@` 停用者被拦 / 循环交替）。
+- `tools/_test_cards.js` **750/750**；`tools/_preview_13.py` **38/38**；`tools/_smoke.py` 通过。
+- ✅ **已发布公网**（沙箱 / 链接不变）→ `tools/_verify_public_full.py` **148 PASS / 0 FAIL**。
+
+### 本轮踩到的坑
+
+- **`run_state` / `status` 是反复广播的**：`selftest.py` 里旧的「等一个事件」写法会读到**上一次残留的**
+  状态（例如上一轮 `run_end` 之后补发的 `paused=False`），于是断言全红而代码没错。
+  改法：先 `drain()` 把缓存排空，再用 `wait_until(type, 谓词)` 等**符合条件**的那一条。
+  同类坑还有一个：`message_start` 事件里也带 `role=model` 的 `message`，
+  按 role 过滤会把每条发言数两次（1→2→1→2 被数成 `甲甲 乙乙`）。
+- 🔴 **公网网关偶发 502**（详见 README 已知坑 25）：`POST /api/rooms` 撞到一次网关的
+  `bad gateway`，连发 5 次全 200 → 给 `req()` 加 5xx 退避重试 + 结尾兜底清扫探针房。
+- ⚠️ **本批未验证**：真机拖动排序的手感、`@真人` 响铃与闪烁的实际效果、首字超时输入框的真机交互。
+- ⏸️ 仍未 **git 提交**（第 17~24 批都攒着，等用户说「提交」）。
+
+## 第 25 批（2026-10-19）：提示词里的真人名单按「在线 / 不在线」分组
+
+用户原话：「**这里模型的回答为什么会有一个不在线的真人用户**」
+（截图：模型接龙时把话头递给不在线的「旺袅袅」；右栏红框圈的正是不在线的她）。
+
+### 真因（读码定位）
+
+`orchestrator._build_messages()` 里那段真人名单取的是 `store.room_members(room_id)` ＝ **成员表**
+（所有进过房间的人，就是右栏"真人"那栏），**不是"当前在线"**：
+
+    本房间有 2 位真实用户参与讨论：福老师、旺袅袅。…请针对具体的人回应，不要笼统说「用户」。
+
+再叠加两点，模型必然点名她：① 这段话**明确要求**"针对具体的人回应"；② 发言记录是**全量重读**的，
+她以前的发言原文都还在上下文里。而"谁在线"后端其实一直知道 —— `main.py` 的 `_online_uids()`
+（按"有没有 WS 连接挂在这个房间"算，右栏在线圆点同一套判定），只是没喂给模型；
+编排器里的 `register_member / unregister_member` 是空壳。
+
+### 改了什么
+
+- **新增 `app/prompt_text.py`**（纯函数 `humans_prompt(members, online_uids)`）：
+  - `online_uids is None` → 老口径（全部当参与讨论的人），给老调用方兜底；
+  - 给了在线集合 → 分「此刻在线的真人：… / 曾参与讨论、但现在不在线的：…（看不到新消息，也不会回复）」
+    两组，并要求模型**优先回应在线的人、别把话头递给不在线的人**；全离线时不要求"回应在线的人"。
+  - 🔴 这个模块**刻意不 import 任何 app 内模块**（`config_store` 在 import 时就会实例化 store 并写盘），
+    这样 `selftest.py` 可以直接 import 它做单测，不会和被测服务抢写文件。
+- **`app/orchestrator.py`**：`__init__` 增加 `online_provider=None`（存成 `self._online_uids`）；
+  `_build_messages()` 改调 `humans_prompt(self.store.room_members(rid), self._online_uids(rid))`。
+- **`app/main.py`**：`orch = Orchestrator(store, rooms, broadcast, online_provider=_online_uids)`。
+- **前端完全没动**：右栏成员列表照旧显示所有成员（成员表 ≠ 在线列表，这是两回事）。
+
+### 验证
+
+- `tools/selftest.py` **302/302**（新增 6 条：老口径兜底 / 在线分组 / 离线说明 /
+  "别递话头" / 全离线措辞 / 无真人返回空串）。
+- `tools/_test_cards.js` **753/753**（新增 3 条源码标记：`humans_prompt` 拆分、
+  `online_provider=None` 参数、`main.py` 的 `online_provider=_online_uids` 接线）。
+- `tools/_smoke.py` 通过；**已发布公网**（沙箱 / 链接不变）→ `tools/_verify_public_full.py`
+  **148 PASS / 0 FAIL**（无回归）。
+- ⚠️ **线上看不到这条提示词**（不暴露接口），所以"模型不再点名不在线的人"这个**行为效果**
+  只在本地验证过（单测 + 源码标记 + 全套回归）；线上跑的是同一份代码，实际观感要用户聊一句才能确认。
+
+### 本批顺带的事
+
+- 用户同时问了「『今晚吃什么』我不是删了吗」—— 线上查证：这间房（`今晚吃什么-8417b1`）**没被删过**
+  （4 条消息、成员福老师+旺袅袅都在，**回收站里也没有同名条目**）。多半删的是**本地**那份
+  （本地与公网是两套独立数据）或更早的同名旧房间。
+- 清掉了**我自己的**线上回收站残留：10-16 探针建的 8 个 `probe-live-*` 条目当时只删进了回收站、
+  没彻底删 —— 这次全部彻底删除。现在线上回收站只剩用户自己 10-16 删的「12」一条。
+- 项目本地也做了一次大扫除：`tools/` 160 → 25 项（91 个日志 + 39 个一次性脚本 + 3 个快照 +
+  `__pycache__`，全走回收站），详见 `2026-10-19` 的工作日志。
+- ⏸️ 仍未 **git 提交**（第 17~25 批都攒着，等用户说「提交」）。
+
+## 第 26 批（2026-10-19）：@ 几位模型就说几位
+
+用户原话：「**@ 多个模型，为什么只有第一个模型回答**」
+（默认讨论室，一条消息 @ 了 deepseek-v4.1-flash 和 doubao，只有 deepseek 回了）。
+
+### 真因（两处叠加，读码定位）
+
+1. **前端只传第一位**：`app.js sendHostMessage()` 里 `const pointAt = men.models[0] || null`
+   —— @ 列表里只有第一个模型被送进 `point_at`，其余只是高亮显示 + 记进 mentions，
+   **从未进过发言队列**。
+2. **暂停下只服务一位**：`orchestrator._loop()` 暂停分支说完一位就 `break`。就算两位都进了
+   队列，暂停状态下也只有第一位开口。而截图顶部横幅正写着「已暂停」——两层原因全占了。
+
+（附带说明：deepseek 在结尾 @doubao「你有补充吗」**不算点名**——模型 @ 模型只是正文文本，
+只有真人发的消息才会进调度。）
+
+### 改了什么
+
+- **`static/app.js`**：`sendHostMessage()` 改为把 @ 到的**全部**模型按出现先后放进
+  `pointAtList`（老字段 `pointAt` 保留 = 第一位，兼容老服务端）；真人 uid 照旧绝不进队列。
+- **`app/orchestrator.py`**：
+  - `host_message()` 新增 `point_at_list` 参数；消息**上屏之后**把列表逐位 `point_model`
+    （去重、按出现先后、非本房间启用模型的 ref 被过滤）。⚠️ 顺序很关键：模型开口前会
+    **重读全部历史**，先插队后上屏的话它看不到刚发的那条。
+  - `_loop()` 暂停分支改成：被 @ 的几位**依次各说一句**（`jump` 队列清空才 `break`），
+    说完继续保持暂停 —— 不轮转到顺序里的下一位。
+- **`app/main.py`**：把 `pointAtList` 透传给 `host_message`。
+
+### 验证
+
+- `tools/selftest.py` **304/304**（新增 2 条真 WS 断言：暂停期间 `pointAtList` @ 两位 mock 模型
+  → 两位按 @ 先后各说一句；说 完仍暂停收工，不轮转第三位）。
+- `tools/_test_cards.js` **756/756**（新增 3 条 + 改写 1 条：`pointAtList` 全量、`pointAt` 兼容位、
+  插队必须在消息上屏之后、暂停分支逐位服务）。
+- `tools/_preview_13.py` / `tools/_smoke.py` 通过。
+- **已发布公网**（沙箱 / 链接不变）→ `tools/_verify_public_full.py` **148 PASS / 0 FAIL**
+  （第一次跑 147/1：「@真人 只进 mentions」断言还在查旧源码标记 `men.models[0]`；
+  断言同步升级为第 26 批口径后全绿 —— 红的是断言不是代码）。
+- ⚠️ 「@ 两位各说一句」的**真模型行为**只在本地 mock 模型上真跑过 WS 全链路；线上不养
+  自检模型，跑的是同一份代码，实际观感要用户 @ 两位试一句。
+
+### 本批顺带的事
+
+- 确认了模型在发言结尾 @ 另一位模型（「@doubao 你有补充吗」）**只是文本**，不会触发调度
+  —— 这是设计：调度只认真人消息里的 @，不然模型会互相无限点名刷额度。
+- ⏸️ 仍未 **git 提交**（第 17~26 批都攒着，等用户说「提交」）。

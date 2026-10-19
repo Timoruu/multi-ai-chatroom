@@ -48,8 +48,12 @@ def main() -> int:
     print(f'GET /            -> {st}, {len(html)} 字符')
     for needle in ('id="joinGate"', 'id="gateNick"', 'id="dlgJoin"', 'id="joinCode"',
                    'id="peopleList"', 'id="participantList"', 'id="btnMembers"',
-                   'id="btnStartRound"', 'id="btnLeave"', 'id="mePill"', 'id="roomCode"',
+                   # 第 24 批：旧「启动新一轮 / 停止发言」已删除，换成「暂停 / 继续」
+                   'id="btnPause"', 'id="btnResume"', 'id="btnLeave"', 'id="mePill"', 'id="roomCode"',
                    'id="rOpen"', 'id="rOpenNote"', 'id="rulesBox"', 'id="rolesBox"',
+                   # 2026-10-15 第 17 批：房间级规则 / 角色
+                   'id="dlgScope"', 'id="btnRoomScope"', 'id="scopeRuleList"',
+                   'id="scopeRoleList"', 'id="rulesSrc"', 'id="rolesSrc"',
                    'window.APP_BUILD',
                    # 2026-10-15 用户要求：右上角要有「登录 / 退出」；门槛要能「先看看」
                    'id="userBox"', 'id="btnUserLogin"', 'id="btnUserLogout"',
@@ -70,7 +74,8 @@ def main() -> int:
     st, admin_html = get('/admin')
     print(f'GET /admin       -> {st}, {len(admin_html)} 字符')
     for needle in ('id="loginGate"', 'id="adminPw"', 'id="btnLogin"', 'id="modelList"',
-                   'id="providerList"', 'id="rulesEdit"', 'id="roleAdminList"',
+                   'id="providerList"', 'id="rulesEdit"', 'id="rulesPreamble"',
+                   'id="btnRuleNew"', 'id="roleAdminList"',
                    'id="userAdminList"', 'id="pwCurrent"', 'id="pwNext"', 'id="btnPwSave"',
                    'id="dlgModel"', 'id="dlgRoleEdit"'):
         if needle not in admin_html:
@@ -97,7 +102,9 @@ def main() -> int:
     st, js = get('/static/app.js')
     print(f'GET /app.js      -> {st}, {len(js)} 字符')
     for needle in ('function submitGate', 'function pickRoom', 'function submitJoinCode',
-                   'function renderPeople', 'function startRound', 'function applyPermissions',
+                   # 第 24 批：旧「启动新一轮」startRound 已删除，换成 pauseModels / resumeModels
+                   'function renderPeople', 'function pauseModels', 'function resumeModels',
+                   'function applyPermissions',
                    'function roomIsOpen', "'X-Owner-Keys'",
                    'function iAmOwnerless', "case 'removed'",
                    # 2026-10-15：右上角退出 + 昵称即身份（免密码、不区分浏览器）

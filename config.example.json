@@ -8,8 +8,8 @@
     "拉取模型列表：默认打 GET {base_url}/models；不在这个路径的厂商用 models_url（整条 URL，如 GitHub Models 的 /catalog/models）或 models_path 覆盖，需要特殊请求头用 models_headers。supports_model_list=false 表示「已核实该厂商没有列表接口」，界面会直接让用户手填。2026-10-13 逐家实测：智谱 / 火山方舟 / 百炼 / TokenHub 都有 GET /models。",
     "思考档位（2026-10-13 新增）：models[].thinking_level 取值 \"\"（不干预，默认）/ low / high / max，页面上只给这三个档 + 「不设置」。**它只是统一命名，真正发给厂商的参数名由 app/providers.py 的 REASONING_DIALECT 按厂商翻译**（逐家实测，不可照抄）：智谱 glm-5.3-flash 的 low 与 high 实际都等于「关闭思考」、只有 max 才思考，且不认 thinking 字段与 medium；火山方舟/百炼/TokenHub 的 low 是真降档。要「彻底关闭」请另用 thinking.type=disabled（豆包、TokenHub 有效）或 enable_thinking=false（千问）；手写 extra_body 的优先级高于档位。各行实测数据见项目 MEMORY.md。",
     "房间准入（2026-10-14 新增）：rooms[].open=true 的房间是**公开房间** —— 不发房间号（code 留空），任何人打开页面点一下就进来（默认讨论室就是这种，用户要求「默认讨论室不应该设置密码，谁都可以使用」）。open=false 的房间必须凭 6 位房间号加入。房主可在「房间设置」里把房间公开/私有来回切：切公开会清空房间号，切回私有会自动补一个新的 6 位号。",
-    "管理口令（2026-10-14 新增）：admin 段存 /admin 页面的管理口令（PBKDF2-SHA256 哈希＋随机盐，不是明文）。默认口令由用户指定，可在 /admin 页面里改。⚠️ 权限边界：从 / 进来的都是普通用户 —— 看不到也改不了模型库 / 厂商 Key；模型库、厂商 Key、规则（shared_prompt）、角色库（role_presets）都只能由 /admin 登录后修改。房间的创建与管理（含往房间加模型）仍归房主。admin 段不存在时，服务启动会自动补上默认口令。",
-    "昵称即账号（2026-10-14 新增）：普通用户进首页要填昵称，**昵称全局唯一、永久占用** —— 昵称就是登录账号。注册表另存 data/users.json（不在本文件里），令牌由浏览器本地保存；忘了令牌只能请管理员在 /admin 里「释放」该昵称。"
+    "管理口令（2026-10-14 新增）：admin 段存 /admin 页面的管理口令（PBKDF2-SHA256 哈希＋随机盐，不是明文）。默认口令由用户指定，可在 /admin 页面里改。⚠️ 权限边界：从 / 进来的都是普通用户 —— 看不到也改不了模型库 / 厂商 Key；模型库、厂商 Key、默认规则（rules）、角色库（role_presets）都只能由 /admin 登录后修改。房间的创建与管理（含往房间加模型）仍归房主。admin 段不存在时，服务启动会自动补上默认口令。",
+    "昵称即身份（2026-10-15 改）：普通用户进首页要填昵称，**昵称就是身份、免密码、不区分浏览器** —— 同一个昵称在哪台设备输入都得到同一个人（同一份房间成员关系与发言历史）。注册表另存 data/users.json（不在本文件里），**没有用户令牌**。管理员在 /admin 里删除某个昵称 = 纯删除（不拉黑），删掉之后任何人都能立刻重新用这个昵称。"
   ],
   "providers": {
     "zhipu": {
@@ -101,9 +101,9 @@
       "model_verified": false,
       "model_note": "可能是 glm-4.7-flash / glm-4-flash，以控制台显示的模型码为准",
       "temperature": 0.8,
-      "max_tokens": 800,
+      "max_tokens": 1000,
       "enabled": true,
-      "thinking_level": ""
+      "thinking_level": "off"
     },
     {
       "id": "doubao-seed",
@@ -113,9 +113,9 @@
       "model_verified": false,
       "model_note": "火山方舟有两种填法：直接填模型名，或填控制台创建的【接入点 ID】（ep- 开头）。报 model not found 时先去控制台确认接入点",
       "temperature": 0.9,
-      "max_tokens": 800,
+      "max_tokens": 1000,
       "enabled": true,
-      "thinking_level": ""
+      "thinking_level": "off"
     },
     {
       "id": "qwen-flash",
@@ -125,9 +125,9 @@
       "model_verified": false,
       "model_note": "可选 qwen3.8-flash / qwen3.7-flash；免费额度按模型独立计算",
       "temperature": 0.8,
-      "max_tokens": 800,
+      "max_tokens": 1000,
       "enabled": true,
-      "thinking_level": ""
+      "thinking_level": "off"
     },
     {
       "id": "hunyuan-turbos",
@@ -136,9 +136,9 @@
       "model": "hunyuan-turbos-latest",
       "model_verified": false,
       "temperature": 0.9,
-      "max_tokens": 800,
+      "max_tokens": 1000,
       "enabled": true,
-      "thinking_level": ""
+      "thinking_level": "off"
     },
     {
       "id": "gpt-github",
@@ -148,12 +148,61 @@
       "model_verified": false,
       "model_note": "免费额度小，建议只在关键轮次启用",
       "temperature": 0.8,
-      "max_tokens": 800,
+      "max_tokens": 1000,
       "enabled": false,
-      "thinking_level": ""
+      "thinking_level": "low"
     }
   ],
-  "shared_prompt": "你在参加一场多模型讨论，用户是主持人。规则：1) 同意某人时必须补充新理由，不要复述对方的话；2) 引用他人观点时写出对方的名字；3) 禁止空洞的客套话、总结陈词和排比句；4) 你的输出是讨论发言，不是给用户的最终答复；5) 用户点名你时，直接针对被点名的内容作答；6) 不允许编造事实、数据、引用或来源，不确定就明确说不确定；7) 自己的发言不能前后矛盾，改了主意要说明为什么；8) 不要为了附和别人而改变判断，也不要为了反对而反对；9) 不要重复自己或别人已经说过的话，没有新信息就不必再说；10) 一次发言集中推进一个观点，把理由说完整；11) 分歧发生时直接点明分歧在哪，不要用「见仁见智」「各有各的道理」这类说法盖过去。",
+  "rules": {
+    "_note": "默认规则（2026-10-15 第 17 批起）。房间**没有自定义规则**时，模型每轮都会收到这一份。规则已从「一整串」拆成逐条，便于在 /admin 里一条条增删；房主可在自己房间里改（首次编辑即固化成房间自己的一份，可一键恢复默认）。",
+    "preamble": "你在参加一场多模型讨论，房间里有多位真人参与者（他们各自有昵称，发言会按昵称出现在讨论记录里）。规则：",
+    "items": [
+      {
+        "id": "rule-01",
+        "text": "同意某人时必须补充新理由，不要复述对方的话；"
+      },
+      {
+        "id": "rule-02",
+        "text": "引用他人观点时写出对方的名字；"
+      },
+      {
+        "id": "rule-03",
+        "text": "禁止空洞的客套话、总结陈词和排比句；"
+      },
+      {
+        "id": "rule-04",
+        "text": "你的输出是讨论发言，不是给用户的最终答复；"
+      },
+      {
+        "id": "rule-05",
+        "text": "有人点名你时，直接针对被点名的内容作答；"
+      },
+      {
+        "id": "rule-06",
+        "text": "不允许编造事实、数据、引用或来源，不确定就明确说不确定；"
+      },
+      {
+        "id": "rule-07",
+        "text": "自己的发言不能前后矛盾，改了主意要说明为什么；"
+      },
+      {
+        "id": "rule-08",
+        "text": "不要为了附和别人而改变判断，也不要为了反对而反对；"
+      },
+      {
+        "id": "rule-09",
+        "text": "不要重复自己或别人已经说过的话，没有新信息就不必再说；"
+      },
+      {
+        "id": "rule-10",
+        "text": "一次发言集中推进一个观点，把理由说完整；"
+      },
+      {
+        "id": "rule-11",
+        "text": "分歧发生时直接点明分歧在哪，不要用「见仁见智」「各有各的道理」这类说法盖过去。"
+      }
+    ]
+  },
   "role_presets": {
     "_note": "角色预置库。只有房间参与者的 role_override 填这里的 id（不是自由文本）；模型库不设角色。",
     "items": [

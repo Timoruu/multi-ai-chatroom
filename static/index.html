@@ -55,7 +55,7 @@
     <div id="roomList" class="list"></div>
     <div class="hint">
       <b>默认讨论室</b>是所有人共用的入口房间：<b>没有房主</b>，谁进去权限都一样
-      （添加模型 / 改房间设置 / 清空历史 / 自由讨论 / 移出成员都能用），也不能被删除。<br>
+      （添加模型 / 改房间设置 / 清空历史 / 暂停模型发言 / 移出成员都能用），也不能被删除。<br>
       自己新建的房间默认<b>不放任何模型</b>，进去后到右栏「本房间参与者」点「添加模型」自己加；<br>
       「复制」会连参与者一起复制，最省事。
     </div>
@@ -63,11 +63,14 @@
     <section class="rblock" data-key="rules">
       <div class="col-head rblock-head" title="点击折叠 / 展开">
         <span>规则</span>
+        <button id="btnEditRules" class="mini" hidden title="修改本房间的规则（房主可用）">修改</button>
         <i class="rblock-arrow"></i>
       </div>
       <div class="rblock-body">
-        <div class="info-note">每个模型每次发言都会收到这份共享规则（system 提示词）。<br>
-          <b>只有管理员能在 /admin 里改</b>，普通用户只读。</div>
+        <div class="info-note">模型每次发言都会收到这份共享规则（system 提示词）。
+          <b>房主点标题栏的「修改」就能随时改自己房间那份</b>（控制条与「房间设置」里也有同样的入口）。
+          后台的默认规则只有管理员能在 /admin 改。</div>
+        <div class="tip" id="rulesSrc"></div>
         <div id="rulesBox" class="info-body"></div>
       </div>
     </section>
@@ -75,13 +78,15 @@
     <section class="rblock" data-key="roles">
       <div class="col-head rblock-head" title="点击折叠 / 展开">
         <span>角色</span>
+        <button id="btnEditRoles" class="mini" hidden title="改角色库：默认角色只读，房主可新增本房间自建角色">修改</button>
         <i class="rblock-arrow"></i>
       </div>
       <div class="rblock-body">
         <div class="info-note">给参与者选了角色后，它的 system 提示词里会多一行
           「你在这场讨论里的角色：…」。<br>
           设 / 换角色：右栏参与者卡片上的「角色」按钮（房主可用）。<br>
-          <b>角色库本身只有管理员能在 /admin 里增删改</b>。</div>
+          <b>点标题栏的「修改」就能新增本房间自己的角色；默认角色删不掉</b>（那由管理员在 /admin 维护）。</div>
+        <div class="tip" id="rolesSrc"></div>
         <div id="rolesBox" class="info-body"></div>
       </div>
     </section>
@@ -91,38 +96,25 @@
     <div class="hostbar">
       <div class="host-input-row">
         <textarea id="hostInput" rows="1"
-          placeholder="说一句（说完会点亮你）。房间里的人都说完，模型才开始依次回应；等不及就点「启动新一轮」。（Ctrl+Enter 发送）"></textarea>
+          placeholder="说一句 —— 你一发言，房间里的模型就会按顺序接着说下去（点「暂停模型发言」才停）。输入 @ 能点名：@模型 = 让它插队接话，@真人 = 提醒他（响一声）。（Ctrl+Enter 发送）"></textarea>
         <button id="btnSend" class="primary">发言</button>
+        <div id="atMenu" class="at-menu" hidden></div>
       </div>
       <div class="host-actions">
-        <span class="group" title="开启后模型会依次各发言一次；关闭后只能点某位参与者的「发言」单独请他开口。">
-          <label class="chk"><input id="autoSpeak" type="checkbox" checked>自动轮流</label>
-        </span>
-        <span class="group owner-only" title="轮内间隔：上一位说完到下一位开口之间等待的秒数（最少 0.5 秒，最多 60 秒）。等待期间可以直接点「停止」打断，或点名让别人接着说。">
-          <label>间隔</label>
-          <input id="gapInput" type="number" min="0.5" max="60" step="0.5" value="3">
-          <label>秒</label>
-        </span>
-        <span class="group owner-only">
-          <label>自由讨论</label>
-          <input id="roundsInput" type="number" min="1" max="20" value="3">
-          <label>轮</label>
-          <button id="btnFree">开始</button>
+        <span class="group">
+          <button id="btnPause" class="danger" title="暂停模型发言：正在说的这位说完就停，队列里其余的不再开口；真人发言不受影响。">暂停模型发言</button>
+          <button id="btnResume" class="primary" hidden title="解除暂停，模型按顺序接着发言。">继续模型发言</button>
         </span>
         <span class="group">
-          <label>总结者</label>
-          <select id="summarizerSelect"></select>
-          <button id="btnSummarize">指定总结</button>
+          <button id="btnRoomScopeBar" class="mini" hidden title="随时改本房间的规则 / 角色（规则可逐条增删，角色可新增）">规则 / 角色</button>
         </span>
-        <span class="spacer"></span>
-        <button id="btnStartRound" class="primary">启动新一轮</button>
-        <button id="btnStop" class="danger">停止发言</button>
+        <span class="runhint">真人说一句，模型就按顺序接着说；顺序由房主在右侧拖动模型卡决定。</span>
       </div>
       <div class="runinfo" id="runInfo"></div>
     </div>
     <div id="messages" class="messages">
-      <div class="empty">还没有发言。在下面输入一个问题直接发（发送后参与者会依次各发言一次）；<br>
-        想单独请某位接着说，就点右侧他卡片上的「发言」，或用 @模型名。</div>
+      <div class="empty">还没有发言。在下面输入一个问题直接发 —— <b>你一发言，房间里的模型就会按顺序接着说</b>；<br>
+        模型会一直说下去，直到你点「暂停模型发言」。想单独叫某位就 @ 它；@ 真人则只是提醒他（响一声）。</div>
     </div>
   </section>
 
@@ -134,12 +126,12 @@
         <i class="rblock-arrow"></i>
       </div>
       <div class="rblock-body">
-        <div class="sub-head">真人<span class="tip" id="roundHint"></span>
+        <div class="sub-head">真人
           <span class="spacer"></span>
           <button id="btnMembers" class="mini owner-only" title="房主专用：查看 / 移出房间里的真人成员">管理成员</button>
         </div>
         <div id="peopleList" class="list"></div>
-        <div class="sub-head">模型</div>
+        <div class="sub-head">模型<span class="tip" id="modelOrderHint">（房主可拖动卡片调整发言顺序）</span></div>
         <div id="participantList" class="list"></div>
       </div>
     </section>
@@ -194,11 +186,53 @@
       <label class="check"><input id="rOpen" type="checkbox"> 公开房间（不要房间号，谁都能进）</label>
       <span class="tip" id="rOpenNote">不勾＝私有房间：别人要输入 6 位房间号才能进来。</span>
     </div>
+    <div class="field">
+      <button type="button" id="btnRoomScope" class="mini">本房间规则 / 角色…</button>
+      <span class="tip" id="rScopeNote"></span>
+    </div>
     <div class="dlg-note" id="rNewNote">新房间默认<b>不含任何模型参与者</b>，建好后请在右侧「本房间参与者」点「添加模型」自己挑。</div>
     <div class="dlg-foot">
       <span class="spacer"></span>
       <button type="button" id="btnRoomCancel" class="ghost">取消</button>
       <button type="button" id="btnRoomSave" class="primary">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 房间级「规则 / 角色」（第 17 批）：只有房主能改；默认讨论室跟随后台默认，改不了 -->
+<dialog id="dlgScope">
+  <form method="dialog" class="dlg dlg-wide">
+    <h3 id="scopeTitle">本房间规则 / 角色</h3>
+    <div class="dlg-note" id="scopeNote"></div>
+
+    <section class="scope-sec" id="scopeSecRules">
+      <div class="col-head">
+        <span>本房间规则</span>
+        <span class="spacer"></span>
+        <span class="tip" id="scopeDirty"></span>
+        <button type="button" class="mini" id="btnRuleReset">恢复为默认</button>
+        <button type="button" class="mini primary" id="btnRuleAdd">添加规则</button>
+      </div>
+      <div class="field">
+        <label>前言（每条规则前面那句，通常不用改）</label>
+        <textarea id="scopePreamble" rows="2" class="wide"></textarea>
+      </div>
+      <div id="scopeRuleList" class="list"></div>
+    </section>
+
+    <section class="scope-sec" id="scopeSecRoles">
+      <div class="col-head">
+        <span>角色（默认角色只读，可自己新增）</span>
+        <span class="spacer"></span>
+        <button type="button" class="mini primary" id="btnRoleAddRoom">新增角色</button>
+      </div>
+      <div id="scopeRoleList" class="list"></div>
+    </section>
+
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button type="button" id="btnScopeClose" class="ghost">关闭</button>
+      <button type="button" id="btnScopeSave" class="primary">保存</button>
     </div>
   </form>
 </dialog>

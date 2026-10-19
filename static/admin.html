@@ -55,25 +55,34 @@
     <!-- ---------- 规则库 ---------- -->
     <section class="apanel" data-panel="rules">
       <div class="panel-head">
-        <h3>规则库</h3>
+        <h3>默认规则</h3>
         <span class="spacer"></span>
         <span class="tip" id="rulesDirty"></span>
         <button type="button" id="btnRulesReset" class="ghost">放弃修改</button>
+        <button type="button" class="mini primary" id="btnRuleNew">新增规则</button>
         <button type="button" id="btnRulesSave" class="primary">保存规则</button>
       </div>
-      <div class="panel-note">每个模型每次发言都会收到这份共享提示词（system）。<br>
-        改完点「保存规则」<b>立刻生效，不用重启</b>；首页左栏的「规则」模块同步更新。</div>
-      <textarea id="rulesEdit" rows="16" class="wide"></textarea>
+      <div class="panel-note">这是<b>默认规则</b>：房间没有自定义规则时，模型每轮收到的就是这一份。<br>
+        房主在首页「房间设置 → 本房间规则 / 角色」里改的是<b>他自己房间那一份</b>
+        （可逐条增删 —— 包括删掉这里的默认条目，删的是他那间、不影响这里）。<br>
+        所以<b>这里改的是默认值，管不到已经自定义过的房间</b>。改完点「保存规则」
+        <b>立刻生效，不用重启</b>；首页左栏的「规则」模块同步更新。</div>
+      <div class="field">
+        <label>前言（每条规则前面那句）</label>
+        <textarea id="rulesPreamble" rows="2" class="wide"></textarea>
+      </div>
+      <div id="rulesEdit" class="list"></div>
     </section>
 
     <!-- ---------- 角色库 ---------- -->
     <section class="apanel" data-panel="roles">
       <div class="panel-head">
-        <h3>角色库</h3>
+        <h3>默认角色</h3>
         <span class="spacer"></span>
         <button type="button" id="btnNewRole" class="mini primary">新增角色</button>
       </div>
-      <div class="panel-note">房主给房间参与者「设角色」时，选的就是这里的条目（按「分组」折叠展示）。<br>
+      <div class="panel-note">这是<b>默认角色库</b>：房主给房间参与者「设角色」时，选的就是这里的条目
+        （按「分组」折叠展示）；房主<b>删不掉</b>这里的条目 —— 他只能在自己房间里另外新增。<br>
         ⚠️ 删掉一个还有人在用的角色，那些参与者会变成「未设置角色」（不会崩，但设定丢了）。</div>
       <div id="roleAdminList" class="list grid2"></div>
     </section>
@@ -188,13 +197,13 @@
     </div>
     <div class="field row2">
       <span><label>temperature <span class="help" tabindex="0" aria-label="查看 temperature 说明" data-tip="控制回答的随机性，范围 0～2。调低（0～0.5）＝更稳更保守，适合要事实和结论的场合；调高（1～1.5）＝更发散、更有想法，也更容易跑题。默认 0.8。注意：它只影响风格，几乎不影响速度。">?</span></label><input id="mTemp" type="number" step="0.1" min="0" max="2" value="0.8"></span>
-      <span><label>max_tokens <span class="help help-l" tabindex="0" aria-label="查看 max_tokens 说明" data-tip="这个模型单次发言最多能写多长（含它思考的字数；1 个 token 约等于 1 个汉字或几个字母）。调小＝回答更短、也更快，是提速的主要手段之一；调得太小会写不完、甚至正文空白。建议 600～1200。">?</span></label><input id="mMaxTokens" type="number" min="64" max="32000" value="1200"></span>
+      <span><label>max_tokens <span class="help help-l" tabindex="0" aria-label="查看 max_tokens 说明" data-tip="这个模型单次发言最多能写多长（含它思考的字数；1 个 token 约等于 1 个汉字或几个字母）。调小＝回答更短、也更快，是提速的主要手段之一；调得太小会写不完、甚至正文空白。建议 600～1200，默认 1000。">?</span></label><input id="mMaxTokens" type="number" min="64" max="32000" value="1000"></span>
     </div>
     <div class="field">
       <label>思考档位 <span class="help" tabindex="0" aria-label="查看思考档位说明" data-tip="推理模型会先在心里写一大段草稿再作答，慢主要慢在这里。off＝彻底关掉思考，回答最快，但不是每家厂商都支持；low / high / max＝保留思考、只调强度，越强越慢。免费线路本身会抖动，档位是倾向不是保证。">?</span> <span class="tip">（统一写法 off / low / high / max，各厂商按自己的规则接收；off＝彻底关思考、回答最快，仅部分厂商支持；免费线路有抖动，效果是倾向）</span></label>
       <select id="mThinkLevel">
         <option value="">不设置（不干预）</option>
-        <option value="off">off · 关闭思考（仅部分厂商支持）</option>
+        <option value="off" selected>off · 关闭思考（仅部分厂商支持）</option>
         <option value="low">low · 最省</option>
         <option value="high">high</option>
         <option value="max">max · 最强</option>

@@ -31,7 +31,8 @@ const S = {
   rooms: [],              // 房间摘要（含消息数 / 成员数），来自 /api/state 的 rooms
   editingModel: null,
   editingRoleIndex: -1,   // -1 = 新增
-  rulesLoaded: '',        // 服务端当前的规则原文（用来判断有没有改动）
+  rulesLoaded: '',        // 服务端当前「默认规则」的指纹（用来判断有没有改动）
+  rulesDraft: null,       // 正在编辑的默认规则草稿 {preamble, items[]}
   panel: 'models',        // 当前显示的分区（用户定：默认「模型库」）
 };
 
@@ -288,31 +289,94 @@ function renderProviders() {
   });
 }
 
-/* ------------------------------------------------ 规则（shared_prompt） */
+/* ------------------------------------------------ 默认规则（第 17 批改成逐条） */
+/* 规则已从「一整串」改成可逐条增删的 `{preamble, items[]}`。
+   这里管的是**默认规则** —— 房间没有自定义规则时，模型每轮收到的就是这一份。
+   房主改自己房间那份在首页「房间设置 → 本房间规则 / 角色」里（走 PATCH /api/rooms/{id}），
+   所以**这里改的是默认值，管不到已经自定义过的房间**。 */
+
+function newRuleId() {
+  return 'rule-' + Math.random().toString(16).slice(2, 10);
+}
+
+/* 服务端给的默认规则（老配置里可能还是「一整串」→ 就地拆一次） */
+function rulesFromConfig() {
+  const r = (S.config && S.config.rules) || null;
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
+    return { preamble: r.preamble || '', items: (r.items || []).slice() };
+  }
+  const text = (typeof r === 'string' && r) || ((S.config && S.config.shared_prompt) || '');
+  if (!String(text).trim()) return { preamble: '', items: [] };
+  const marks = [];
+  const re = /(\d+)\)\s/g;
+  let m;
+  let expect = 1;
+  while ((m = re.exec(text)) !== null) {
+    if (parseInt(m[1], 10) !== expect) continue;
+    marks.push([m.index, m.index + m[0].length]);
+    expect += 1;
+  }
+  if (!marks.length) return { preamble: String(text).trim(), items: [] };
+  const items = [];
+  for (let i = 0; i < marks.length; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1][0] : text.length;
+    const body = text.slice(marks[i][1], end).trim();
+    if (body) items.push({ id: 'rule-' + (i + 1), text: body });
+  }
+  return { preamble: text.slice(0, marks[0][0]).trim(), items };
+}
+
+/* 草稿的「干净版」—— 用来算指纹，也用来提交（空条目丢掉） */
+function snapshotRules(draft) {
+  return {
+    preamble: String((draft || {}).preamble || '').trim(),
+    items: ((draft || {}).items || [])
+      .map((x) => ({ id: x.id || newRuleId(), text: String(x.text || '').trim() }))
+      .filter((x) => x.text),
+  };
+}
 
 function loadRules() {
-  const text = ((S.config && S.config.shared_prompt) || '');
-  S.rulesLoaded = text;
-  $('#rulesEdit').value = text;
+  const r = rulesFromConfig();
+  S.rulesDraft = {
+    preamble: r.preamble,
+    items: r.items.map((x) => ({ id: x.id || newRuleId(), text: x.text || '' })),
+  };
+  S.rulesLoaded = JSON.stringify(snapshotRules(S.rulesDraft));
+  renderRulesEdit();
+}
+
+function renderRulesEdit() {
+  const d = S.rulesDraft || { preamble: '', items: [] };
+  $('#rulesPreamble').value = d.preamble || '';
+  const box = $('#rulesEdit');
+  box.innerHTML = d.items.length
+    ? d.items.map((x, i) => '<div class="card scope-item">'
+      + '<div class="card-top"><span class="info-idx">' + (i + 1) + '</span>'
+      + '<span class="card-sub one">默认规则</span>'
+      + '<span class="spacer"></span>'
+      + `<button type="button" class="mini danger" data-a="rm" data-i="${i}">删除</button></div>`
+      + `<textarea class="scope-rule" data-i="${i}" rows="2">${esc(x.text || '')}</textarea>`
+      + '</div>').join('')
+    : '<div class="card card-sub">默认规则是空的 —— 点上面的「新增规则」加一条。</div>';
   markRulesDirty();
 }
 
 function markRulesDirty() {
   const el = $('#rulesDirty');
   if (!el) return;
-  const changed = $('#rulesEdit').value !== S.rulesLoaded;
+  const changed = !!S.rulesDraft
+    && JSON.stringify(snapshotRules(S.rulesDraft)) !== S.rulesLoaded;
   el.textContent = changed ? '有未保存的修改' : '已保存';
   el.className = 'tip' + (changed ? ' bad' : '');
 }
 
 async function saveRules() {
-  const text = $('#rulesEdit').value;
-  const d = await api('/api/prompt', { method: 'POST', body: JSON.stringify({ shared_prompt: text }) });
-  S.config.shared_prompt = d.shared_prompt;
-  S.rulesLoaded = d.shared_prompt;
-  $('#rulesEdit').value = d.shared_prompt;
-  markRulesDirty();
-  toast('规则已保存，立刻生效（首页左栏同步更新）');
+  const body = snapshotRules(S.rulesDraft);
+  const d = await api('/api/prompt', { method: 'POST', body: JSON.stringify({ rules: body }) });
+  S.config.rules = d.rules;
+  loadRules();
+  toast('默认规则已保存，立刻生效（没自定义过规则的房间马上跟着变）');
 }
 
 /* ------------------------------------------------ 角色库 */
@@ -603,7 +667,7 @@ function openModelDialog(model) {
     $('#mModel').value = model.model || '';
     $('#mDisplay').value = model.display_name || '';
     $('#mTemp').value = model.temperature != null ? model.temperature : 0.8;
-    $('#mMaxTokens').value = model.max_tokens || 1200;
+    $('#mMaxTokens').value = model.max_tokens || 1000;
     lv.value = model.thinking_level || '';
     $('#mOffMode').value = model.thinking_off_mode || '';
     $('#mEnabled').checked = model.enabled !== false;
@@ -709,7 +773,7 @@ function currentModelPayload() {
     model: $('#mModel').value.trim(),
     display_name: $('#mDisplay').value.trim() || $('#mModel').value.trim(),
     temperature: parseFloat($('#mTemp').value) || 0.8,
-    max_tokens: parseInt($('#mMaxTokens').value, 10) || 1200,
+    max_tokens: parseInt($('#mMaxTokens').value, 10) || 1000,
     thinking_level: $('#mThinkLevel').value || '',
     thinking_off_mode: $('#mOffMode') ? ($('#mOffMode').value || '') : '',
     enabled: $('#mEnabled').checked,
@@ -732,7 +796,29 @@ function bind() {
 
   $('#btnRulesSave').addEventListener('click', saveRules);
   $('#btnRulesReset').addEventListener('click', loadRules);
-  $('#rulesEdit').addEventListener('input', markRulesDirty);
+  $('#rulesPreamble').addEventListener('input', (e) => {
+    if (!S.rulesDraft) return;
+    S.rulesDraft.preamble = e.target.value;
+    markRulesDirty();
+  });
+  // 改文字只更新草稿（不重渲染，免得丢焦点）；增删才重渲染
+  $('#rulesEdit').addEventListener('input', (e) => {
+    const i = parseInt(e.target.dataset.i, 10);
+    if (!S.rulesDraft || isNaN(i) || !S.rulesDraft.items[i]) return;
+    S.rulesDraft.items[i].text = e.target.value;
+    markRulesDirty();
+  });
+  $('#rulesEdit').addEventListener('click', (e) => {
+    const i = parseInt(e.target.dataset.i, 10);
+    if (e.target.dataset.a !== 'rm' || !S.rulesDraft || isNaN(i)) return;
+    S.rulesDraft.items.splice(i, 1);
+    renderRulesEdit();
+  });
+  $('#btnRuleNew').addEventListener('click', () => {
+    if (!S.rulesDraft) S.rulesDraft = { preamble: '', items: [] };
+    S.rulesDraft.items.push({ id: newRuleId(), text: '' });
+    renderRulesEdit();
+  });
 
   $('#btnNewRole').addEventListener('click', () => openRoleDialog(-1));
   $('#btnRoleCancel').addEventListener('click', () => $('#dlgRoleEdit').close());

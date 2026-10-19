@@ -159,6 +159,28 @@ class Client:
                 return got
         return got
 
+    async def wait_until(self, types, pred, timeout=8.0):
+        """等到「收到的某个事件满足 pred」为止，返回这一批事件。
+
+        ⚠️ 状态类事件（run_state）会被**反复广播**，光等「第一条 run_state」会读到旧值。
+        第 24 批自检第一次跑就是栽在这里：pause 之后读到的是上一轮 run_end 补发的那条
+        `paused=False`，于是「暂停生效」被误判为失败。断言状态时必须带条件。
+        """
+        got = []
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            batch = await self.wait(types, timeout=max(0.2, deadline - time.time()))
+            got += batch
+            if any(pred(e) for e in batch):
+                break
+            if not batch:
+                break
+        return got
+
+    async def drain(self, seconds=0.7):
+        """把连接上积压的广播读干净（run_end 之后服务端还会补发 run_state / status）。"""
+        await self.wait('__selftest_never__', timeout=seconds)
+
 
 def first(evs, kind):
     """从事件列表里挑第一个指定 type 的（没有就 None）。"""
@@ -187,10 +209,11 @@ async def open_ws(ws_url):
 async def multi_person_tests(http, base, ws_url, host_room, host_code):
     """多人讨论端到端：房主 / 成员 / 旁观者三条连接，独立房间。
 
-    用户 2026-10-13 定的规则在这里逐条验：
-      ① 6 位房间号准入，只有房主能管房间；② 成员能用的只有聊天功能；
-      ③ 一轮 = 在线真人都说满一句；④ 谁都按得动「启动新一轮」；
-      ⑤ 房间之间不串消息；⑥ 房主能把一直不说话的人移出。
+    第 24 批（队列循环制，2026-10-16）后这里逐条验：
+      ① 6 位房间号准入，只有房主能管房间；② 成员能用的只有聊天功能（清空历史仍归房主）；
+      ③ 任何真人发言都**立刻**拉起模型队列（不再有「真人都说满一句才算一轮」的门槛）；
+      ④ 单模型房间「一人一句」说完即停；⑤ 任何真人都能暂停 / 继续，暂停期间发言不再自动启动；
+      ⑥ 暂停期间 @ 某位模型，它仍会开口一次；⑦ 房间之间不串消息；⑧ 房主能把一直不说话的人移出。
     返回 {rooms: [...], models: [...]} 供第 8 节清理。
     """
     out = {'rooms': [], 'models': []}
@@ -243,65 +266,92 @@ async def multi_person_tests(http, base, ws_url, host_room, host_code):
                             code=host_code)
         check('旁观者加入另一个房间', first(evs, 'joined') is not None)
         marker = '（隔离自检）这句话只属于多人房间。'
-        await cb.send({'type': 'host_message', 'roomId': mp_room['id'],
-                       'content': marker, 'auto': False})
+        await cb.send({'type': 'host_message', 'roomId': mp_room['id'], 'content': marker})
         evs = await cp.wait('message', timeout=1.6)
         leak = [e for e in evs if (e.get('message') or {}).get('content') == marker]
         check('房间之间不串消息（别的房间看不到这条发言）', not leak, f'{len(leak)} 条泄露')
+        # 上面这条已经把本房间的模型队列拉起来了（房间里有 1 个启用模型），等它跑完再继续，
+        # 否则后面 wait('run_start') 会读到这条残留在缓冲里的旧 run_start。
+        await ca.wait('run_end', timeout=30)
 
-        # ③ 只有一个人说话 → 不算一轮（要在线真人都说满一句）
+        # ③ 真人发言即拉起模型队列（第 24 批：不再有「真人都说满一句才算一轮」的门槛）
         await ca.send({'type': 'host_message', 'roomId': mp_room['id'],
-                       'content': '（多人自检）我先说一句。', 'auto': True})
-        # ⚠️ 连接上还压着前面广播的 round_state，直接 wait 会读到旧的那条；
-        # 所以一直读到「含房主 uid 的那条」为止（带超时，别死等）。
-        rs, lit = {}, False
-        deadline = time.time() + 6
-        while time.time() < deadline and not lit:
-            for e in await ca.wait('round_state', timeout=6):
-                if e.get('type') == 'round_state':
-                    rs = e
-                    if owner_uid in (e.get('spoken') or []):
-                        lit = True
-        check('发言点亮自己（round_state 里 spoken 有他）', lit, str(rs)[:140])
-        evs = await ca.wait('run_start', timeout=2.0)
-        check('还有真人没发言时不自动开模型轮', first(evs, 'run_start') is None)
-
-        # 最后一位真人说完 → 全员点亮，才让参与者依次发言
-        await cb.send({'type': 'host_message', 'roomId': mp_room['id'],
-                       'content': '（多人自检）我补充一句。', 'auto': True})
+                       'content': '（多人自检）我先说一句。'})
         evs = await ca.wait('run_start', timeout=20)
         rsa = first(evs, 'run_start')
-        check('在线真人都说满一句后自动开一轮', rsa is not None,
-              str(rsa)[:120] if rsa else '没等到 run_start')
-        check('这一轮的 label 说明了为什么开（全员发言完毕）',
-              bool(rsa) and '全员发言完毕' in (rsa.get('label') or ''), (rsa or {}).get('label'))
-        evs = await ca.wait('run_end', timeout=60)
-        check('这一轮跑完', first(evs, 'run_end') is not None)
+        check('真人发言立刻拉起模型队列（run_start）', rsa is not None,
+              str(first(evs, 'error'))[:120])
+        check('真人消息即时上屏（不等模型先回）',
+              any((e.get('message') or {}).get('role') == 'user'
+                  and '我先说一句' in ((e.get('message') or {}).get('content') or '')
+                  for e in evs), str([e.get('type') for e in evs])[:140])
+        check('排队人数 = 房间里启用的模型数（这里 1 位）',
+              bool(rsa) and rsa.get('total') == 1, f"total={(rsa or {}).get('total')}")
+        evs = await ca.wait(['message', 'run_end'], timeout=40)
+        mm = [e for e in evs if e.get('type') == 'message'
+              and (e.get('message') or {}).get('role') == 'model']
+        check('单模型房间：真人一句 → 模型回一句', bool(mm),
+              str([e.get('type') for e in evs])[:120])
+        if not first(evs, 'run_end'):
+            evs = await ca.wait('run_end', timeout=40)
+        check('单模型说完即停（run_end，不循环下去）', first(evs, 'run_end') is not None)
 
-        # ④ 普通成员也能「手动启动新一轮」（不等别人了，现在就让模型说）
-        await cb.send({'type': 'start_round', 'roomId': mp_room['id']})
-        evs = await ca.wait('run_start', timeout=20)
-        rsr = first(evs, 'run_start')
-        check('普通成员也能启动新一轮（不是房主专属）', rsr is not None,
+        # ④ 普通成员发言同样能拉起队列（不是房主专属）
+        await cb.send({'type': 'host_message', 'roomId': mp_room['id'],
+                       'content': '（多人自检）成员也说一句。'})
+        evs = await cb.wait('run_start', timeout=20)
+        check('普通成员发言也能拉起模型队列', first(evs, 'run_start') is not None,
               str(first(evs, 'error'))[:100])
-        check('手动启动的 label 标了原因与启动人',
-              bool(rsr) and '手动启动新一轮' in (rsr.get('label') or '')
-              and '自检客人' in (rsr.get('label') or ''), (rsr or {}).get('label'))
-        await cb.send({'type': 'stop', 'roomId': mp_room['id']})
-        evs = await ca.wait('run_end', timeout=15)
-        check('成员也能停止发言', first(evs, 'run_end') is not None)
+        await cb.wait('run_end', timeout=40)
 
-        # ② 成员能做的只有聊天功能：自由讨论 / 清空历史一律拒
-        await cb.send({'type': 'free', 'roomId': mp_room['id'], 'rounds': 1})
-        evs = await cb.wait('error', timeout=8)
-        e1 = first(evs, 'error')
-        check('成员不能发起自由讨论（会成倍烧额度）',
-              bool(e1) and '房主' in (e1.get('error') or ''), str(e1)[:100])
+        # ⑤ 暂停 / 继续（任何真人都按得动；暂停后当前这位说完才停）
+        # ⚠️ run_end 之后服务端还会补发 run_state / status —— 先清干净，否则会读到上一轮
+        #    那条「paused=False」的旧 run_state，把「暂停生效」误判成失败。
+        await cb.drain()
+        await cb.send({'type': 'pause', 'roomId': mp_room['id']})
+        # pause 依次广播 run_state → notice：等 notice 就能一次把两条都拿全
+        evs = await cb.wait('notice', timeout=8)
+        check('成员也能暂停模型发言（run_state.paused=True）',
+              any(e.get('type') == 'run_state' and e.get('paused') is True for e in evs),
+              str([e.get('type') for e in evs])[:140])
+        check('暂停会广播 notice 说明', first(evs, 'notice') is not None,
+              str(first(evs, 'notice'))[:120])
+        # 暂停期间真人发言 → 不再自动拉起队列（必须点「继续」）
+        await cb.drain()
+        await cb.send({'type': 'host_message', 'roomId': mp_room['id'],
+                       'content': '（多人自检）暂停期间说一句。'})
+        evs = await cb.wait('run_start', timeout=3)
+        check('暂停期间真人发言不会自动启动模型', first(evs, 'run_start') is None)
+        # 但暂停期间 @ 某位模型 → 它仍会说一次（真人显式指令优先于暂停）
+        await cb.send({'type': 'point', 'roomId': mp_room['id'], 'modelRef': mp_mid})
+        evs = await cb.wait_until('message',
+                                  lambda e: e.get('type') == 'message'
+                                  and (e.get('message') or {}).get('role') == 'model',
+                                  timeout=40)
+        check('暂停期间 @模型 仍会让它开口一次',
+              any(e.get('type') == 'message'
+                  and (e.get('message') or {}).get('role') == 'model' for e in evs),
+              str([e.get('type') for e in evs])[:140])
+        await cb.wait('run_end', timeout=40)
+        await cb.drain()
+        # 继续
+        await cb.send({'type': 'resume', 'roomId': mp_room['id']})
+        evs = await cb.wait_until('run_state', lambda e: e.get('paused') is False, timeout=8)
+        check('成员也能让模型继续（run_state.paused=False）',
+              any(e.get('type') == 'run_state' and e.get('paused') is False for e in evs),
+              str([e.get('type') for e in evs])[:140])
+        evs = await cb.wait('run_start', timeout=20)
+        check('点「继续」后队列重新跑起来', first(evs, 'run_start') is not None,
+              str(first(evs, 'error'))[:100])
+        await cb.wait('run_end', timeout=40)
+        await cb.drain()
+
+        # ⑥ 成员能做的只有聊天功能：清空历史仍是房主专属
         await cb.send({'type': 'clear', 'roomId': mp_room['id']})
         evs = await cb.wait('error', timeout=8)
         e2 = first(evs, 'error')
-        check('成员不能清空房间历史', bool(e2) and '房主' in (e2.get('error') or ''),
-              str(e2)[:100])
+        check('成员不能清空房间历史（房主专属）',
+              bool(e2) and '房主' in (e2.get('error') or ''), str(e2)[:100])
 
         # REST 分权
         r = await http.patch(base + f'/api/rooms/{mp_room["id"]}',
@@ -422,17 +472,15 @@ async def open_room_tests(http, base, ws_url):
             check('房主能凭钥匙进空房间（虽然里面没模型）',
                   first(evj, 'joined') is not None, str(evj)[:100])
             await ce.send({'type': 'host_message', 'roomId': nroom['id'],
-                           'content': '（自检）这个房间还没加模型。', 'auto': True})
+                           'content': '（自检）这个房间还没加模型。'})
             evs = await ce.wait('error', timeout=8)
             ee = first(evs, 'error')
             check('空房间里发言会明确报错提示去添加模型',
                   bool(ee) and '可发言的模型' in (ee.get('error') or ''), str(ee)[:120])
-            await ce.send({'type': 'start_round', 'roomId': nroom['id']})
-            evs = await ce.wait('error', timeout=8)
-            check('空房间里「启动新一轮」也给出同样的提示（不是假装成功）',
-                  first(evs, 'error') is not None, str(first(evs, 'error'))[:100])
+            # 「继续」在空房间里也不该开出一个 0 人的队列
+            await ce.send({'type': 'resume', 'roomId': nroom['id']})
             evs = await ce.wait('run_start', timeout=1.5)
-            check('空房间不会开出一个 0 人模型轮（不会广播 run_start）',
+            check('空房间不会开出一个 0 人模型队列（不会广播 run_start）',
                   first(evs, 'run_start') is None)
         finally:
             try:
@@ -689,9 +737,10 @@ async def main() -> int:
         r = await http.post(base + '/api/models', json={'id': 'should-not-exist'},
                             headers=anon_header())
         check('不带令牌不能新增模型（401）', r.status_code == 401, f'HTTP {r.status_code}')
-        r = await http.post(base + '/api/prompt', json={'shared_prompt': 'hack'},
+        r = await http.post(base + '/api/prompt',
+                            json={'rules': {'preamble': 'hack', 'items': []}},
                             headers=anon_header())
-        check('不带令牌不能改规则（401）', r.status_code == 401, f'HTTP {r.status_code}')
+        check('不带令牌不能改默认规则（401）', r.status_code == 401, f'HTTP {r.status_code}')
         r = await http.post(base + '/api/providers/zhipu/key', json={'api_key': 'x'},
                             headers=anon_header())
         check('不带令牌不能改厂商 Key（401）', r.status_code == 401, f'HTTP {r.status_code}')
@@ -931,92 +980,117 @@ async def main() -> int:
             # 没加入房间就想发言 → 必须被挡住
             evs = await c.wait(['status'], timeout=0.3)   # 冲掉 join 之后的广播，安静一下
 
-            # 4a. 主持人在自检房间里提问（auto=False：只入池，不自动发言）
+            # 4a. 主持人发言：消息即时上屏 + **立刻**拉起模型队列
+            #     （第 24 批取消「自动轮流开关 / 手动启动」，一律真人说话即触发）
             await c.send({'type': 'host_message', 'roomId': new_room['id'],
-                          'content': '我们该不该现在就把灰度发布推到全量？', 'auto': False})
-            evs = await c.wait('message', timeout=20)
+                          'content': '我们该不该现在就把灰度发布推到全量？'})
+            evs = await c.wait('run_start', timeout=20)
             got_host = [e for e in evs if e.get('type') == 'message'
                         and (e.get('message') or {}).get('role') == 'user']
             check('主持人发言进入公共消息池', bool(got_host))
-            evs = await c.wait('run_start', timeout=2.5)
-            check('关掉自动轮流时不自动发言（只入池等人点名）',
-                  not any(e.get('type') == 'run_start' for e in evs))
+            check('主持人发言立刻拉起模型队列（不再需要开关 / 手动启动）',
+                  first(evs, 'run_start') is not None, str([e.get('type') for e in evs])[:140])
 
-            # 4a2. 自动轮流：主持人发一句话 = 一轮，轮内参与者依次各发言一次
-            await c.send({'type': 'host_message', 'roomId': new_room['id'],
-                          'content': '（自动轮流自检）那你怎么看？', 'auto': True})
-            evs = await c.wait('run_start', timeout=20)
+            # 4a2. 单模型房间「一人一句」：说一句就停，不循环（用户 2026-10-16 定）
             total_auto = next((e.get('total') for e in evs if e.get('type') == 'run_start'), 0)
-            label_auto = next((e.get('label') for e in evs if e.get('type') == 'run_start'), '')
-            check('自动轮流按参与人数展开（1 位参与者 = 1 步）', total_auto == 1, f'total={total_auto}')
-            check('这一轮标出「第 N 轮」', '轮' in (label_auto or ''), label_auto)
-            auto_msgs, auto_round = [], None
+            check('队列人数 = 启用参与者数（这里 1 位）', total_auto == 1, f'total={total_auto}')
+            auto_msgs = []
             deadline = time.time() + 60
             while time.time() < deadline:
                 evs = await c.wait(['message', 'run_end'], timeout=60)
                 auto_msgs += [e['message'] for e in evs if e.get('type') == 'message'
                               and (e.get('message') or {}).get('role') == 'model']
-                if auto_msgs:
-                    auto_round = auto_msgs[-1].get('round')
                 if any(e.get('type') == 'run_end' for e in evs):
                     break
-            check('自动轮流确实产出了发言', len(auto_msgs) == 1, f'{len(auto_msgs)} 条')
-            check('自动发言带上轮次号', bool(auto_round), str(auto_round))
+            check('单模型确实只产出 1 条就收工（一人一句）', len(auto_msgs) == 1,
+                  f'{len(auto_msgs)} 条')
+            check('产出的是模型发言（role=model）',
+                  bool(auto_msgs) and auto_msgs[0].get('role') == 'model',
+                  str((auto_msgs or [{}])[0].get('role')))
 
-            # 4a3. 轮内间隔（2026-10-13 用户要求「至少 3 秒以上」）+ 发言顺序
+            # 4a3. 多模型：按 participants 顺序**持续循环**（1→2→1→2…），直到真人按「暂停」
+            #      （第 24 批：没有波次上限、也没有「轮内间隔」了 —— 变量名沿用历史，语义已换）
             gap_mid = 'selftest-gap-model'
             r = await http.post(base + '/api/models', json={
-                'id': gap_mid, 'provider': 'mock', 'display_name': '自检·间隔用二号',
+                'id': gap_mid, 'provider': 'mock', 'display_name': '自检·循环用二号',
                 'model': 'mock-picky', 'temperature': 0.5,
                 'max_tokens': 120, 'enabled': True,
             })
-            check('自检自建间隔用模型成功', r.status_code == 200)
+            check('自检自建二号模型成功', r.status_code == 200)
             gr = await http.post(base + '/api/rooms',
-                                 json={'name': '自检·间隔房间', 'model_refs': [room_mid, gap_mid]})
+                                 json={'name': '自检·循环房间', 'model_refs': [room_mid, gap_mid]})
             gap_room = gr.json()['room']
             gap_key = gr.json().get('ownerKey') or ''
             OWNER_KEYS[gap_room['id']] = gap_key
-            # 故意填一个远低于下限的值（100ms）：服务端必须钳到下限 500ms，而不是照单全收
-            await http.patch(base + f'/api/rooms/{gap_room["id"]}',
-                             headers=keys_header(),
-                             json={'debate': {'auto_speak': True, 'auto_speak_gap_ms': 100}})
             evs = await ws_join(c, gap_room['id'], 'selftest-owner', '自检主持', owner_key=gap_key)
-            check('切到间隔房间（同一连接换房间）', first(evs, 'joined') is not None,
+            check('切到循环房间（同一连接换房间）', first(evs, 'joined') is not None,
                   str(first(evs, 'join_error'))[:100])
             await c.send({'type': 'host_message', 'roomId': gap_room['id'],
-                          'content': '（轮内间隔自检）请每位依次说一句。', 'auto': True})
-            evs, t_gap, t_next, gap_ms, speakers = [], None, None, None, []
-            seen_gap, seen_run = False, False
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                batch = await c.wait(['message', 'run_start', 'run_end', 'gap', 'gap_end',
-                                      'message_start'], timeout=90)
-                evs += batch
-                for e in batch:
-                    t = e.get('type')
-                    if t == 'run_start':
-                        seen_run = True
-                    elif t == 'gap':
-                        seen_gap, t_gap, gap_ms = True, time.time(), e.get('ms')
-                    elif t == 'message_start' and seen_gap and t_next is None:
-                        t_next = time.time()
-                    elif t == 'message' and (e.get('message') or {}).get('role') == 'model':
-                        speakers.append((e['message'] or {}).get('speaker'))
+                          'content': '（循环自检）请每位依次说一句。'})
+            evs = await c.wait('run_start', timeout=20)
+            total_gap = next((e.get('total') for e in evs if e.get('type') == 'run_start'), 0)
+            check('队列按 2 位参与者展开', total_gap == 2, f'total={total_gap}')
+            # 观察它是否 1→2→1→2… 地循环（mock 每条约 0.5 秒，收满 5 条就够判定了）
+            speakers, t_end = [], time.time() + 30
+            while len(speakers) < 5 and time.time() < t_end:
+                batch = await c.wait('message', timeout=max(0.1, t_end - time.time()))
+                # ⚠️ 必须同时判事件类型：`message_start` 里也带着同一个 message（role=model），
+                #    只按 role 过滤会把每一条发言数两遍（变成 甲甲、乙乙），顺序断言就假红。
+                speakers += [(e['message'] or {}).get('speaker') for e in batch
+                             if e.get('type') == 'message'
+                             and (e.get('message') or {}).get('role') == 'model']
+            check('多模型会持续循环（不止各说一轮就停）', len(speakers) >= 4, str(speakers))
+            check('发言顺序 = participants 数组顺序，且严格 1→2→1→2 交替',
+                  speakers[:4] == ['自检·房间链路用', '自检·循环用二号'] * 2, str(speakers[:6]))
+            # 暂停：当前这位说完就停，队列不再开口
+            await c.send({'type': 'pause', 'roomId': gap_room['id']})
+            evs = await c.wait('run_end', timeout=30)
+            check('暂停后队列收工（run_end）', first(evs, 'run_end') is not None,
+                  str([e.get('type') for e in evs])[:120])
+            stopped = [e for e in evs if e.get('type') == 'message'
+                       and (e.get('message') or {}).get('role') == 'model']
+            check('暂停之后不再有新发言（最多让当前这位说完）', len(stopped) <= 2,
+                  f'暂停后仍收到 {len(stopped)} 条')
+            evs = await c.wait('message', timeout=2.0)
+            check('暂停后彻底安静（没有继续循环）',
+                  not any(e.get('type') == 'message'
+                          and (e.get('message') or {}).get('role') == 'model' for e in evs),
+                  str([e.get('type') for e in evs])[:120])
+            # 4a3b.（第 26 批）暂停期间 @ **两位**模型 → 两位依次各说一句，然后仍暂停收工。
+            #      （第 25 批前前端只传第一位、循环也只服务一位 —— 用户 2026-10-19 实测
+            #        @deepseek @doubao 只有 deepseek 开口，就是这个两处叠加）
+            await c.drain()
+            await c.send({'type': 'host_message', 'roomId': gap_room['id'],
+                          'content': '（点名自检）@两位 依次各说一句。',
+                          'pointAtList': [room_mid, gap_mid]})
+            pointed, t_end = [], time.time() + 45
+            while time.time() < t_end:
+                batch = await c.wait(['message', 'run_end'], timeout=45)
+                pointed += [(e['message'] or {}).get('speaker') for e in batch
+                            if e.get('type') == 'message'
+                            and (e.get('message') or {}).get('role') == 'model']
                 if any(e.get('type') == 'run_end' for e in batch):
                     break
-            total_gap = next((e.get('total') for e in evs if e.get('type') == 'run_start'), 0)
-            check('间隔房间按 2 位参与者展开', total_gap == 2, f'total={total_gap}')
-            check('换人前先广播等待提示（gap 事件）', bool(seen_gap), f'ms={gap_ms}')
-            check('低于下限的间隔被锁到 0.5 秒（2026-10-14 下限由 3 秒放宽到 0.5 秒）',
-                  gap_ms is not None and gap_ms >= 500, f'配置 100ms -> 实际 {gap_ms}ms')
-            check('换人确实等了 >=0.4 秒才让下一位开口',
-                  bool(t_gap and t_next) and (t_next - t_gap) >= 0.4,
-                  f'{round((t_next - t_gap), 2) if (t_gap and t_next) else "?"}s')
-            check('两位参与者都完成了发言', len(speakers) == 2, str(speakers))
-            check('发言顺序 = 房间 participants 数组顺序（不是按名字/分数排序）',
-                  speakers == ['自检·房间链路用', '自检·间隔用二号'], str(speakers))
+            check('暂停期间 @ 两位模型：两位都开口（按 @ 的先后）',
+                  pointed[:2] == ['自检·房间链路用', '自检·循环用二号'], str(pointed[:4]))
+            check('暂停期间 @ 完继续暂停（各说一句就收工，不轮转到第三位）',
+                  len(pointed) == 2, f'{len(pointed)} 条：{pointed}')
+            await c.drain()
+            # 继续 → 队列重新跑起来
+            await c.send({'type': 'resume', 'roomId': gap_room['id']})
+            evs = await c.wait('run_start', timeout=20)
+            check('「继续」后队列重新跑起来', first(evs, 'run_start') is not None,
+                  str(first(evs, 'error'))[:100])
+            # 硬中断（清空历史 = 只有房主能做）：队列立即掐断、半截输出不落盘
+            await c.send({'type': 'clear', 'roomId': gap_room['id']})
+            evs = await c.wait('cleared', timeout=20)
+            check('房主清空历史：收到 cleared（队列同时被掐断）',
+                  first(evs, 'cleared') is not None, str([e.get('type') for e in evs])[:140])
+            h = (await http.get(base + f'/api/rooms/{gap_room["id"]}/history')).json()
+            check('清空后房间确实空了（半截输出没有被写进历史）',
+                  len(h.get('messages') or []) == 0, f"{len(h.get('messages') or [])} 条")
 
-            # 4a4. 单个模型调用失败 → 跳过它、下一位继续，整轮不再报废（2026-10-15 用户要求）
+            # 4a4. 单个模型调用失败 → 跳过它、下一位继续（第 24 批：循环里也一样，不报废队列）
             # 造一个「必然失败」的模型：未知厂商 + 没有 base_url → stream_chat 第一行就抛 ProviderError，
             # 不花钱、不等待、结果确定。排在他后面的 mock 模型必须照样开口。
             bad_mid = 'selftest-broken-model'
@@ -1030,43 +1104,49 @@ async def main() -> int:
             skip_room = sr.json()['room']
             skip_key = sr.json().get('ownerKey') or ''
             OWNER_KEYS[skip_room['id']] = skip_key
-            await http.patch(base + f'/api/rooms/{skip_room["id"]}', headers=keys_header(),
-                             json={'debate': {'auto_speak': True, 'auto_speak_gap_ms': 3000}})
             evs = await ws_join(c, skip_room['id'], 'selftest-owner', '自检主持', owner_key=skip_key)
             check('切到失败跳过房间', first(evs, 'joined') is not None,
                   str(first(evs, 'join_error'))[:100])
             await c.send({'type': 'host_message', 'roomId': skip_room['id'],
-                          'content': '（失败跳过自检）请每位依次说一句。', 'auto': True})
-            skip_errs, skip_msgs, skip_run_end = [], [], False
-            deadline = time.time() + 90
+                          'content': '（失败跳过自检）请每位依次说一句。'})
+            skip_errs, skip_msgs = [], []
+            deadline = time.time() + 40
             while time.time() < deadline:
-                batch = await c.wait(['message', 'message_error', 'run_end', 'error'], timeout=90)
+                batch = await c.wait(['message', 'message_error', 'error'], timeout=40)
                 for e in batch:
                     t = e.get('type')
                     if t == 'message_error':
                         skip_errs.append(e)
                     elif t == 'message' and (e.get('message') or {}).get('role') == 'model':
                         skip_msgs.append(e['message'])
-                    elif t == 'run_end':
-                        skip_run_end = True
-                if skip_run_end:
+                # 「失败 + 后面那位照样开口」取到证就立刻暂停（否则队列会一直循环下去）
+                if skip_errs and skip_msgs:
                     break
+            await c.send({'type': 'pause', 'roomId': skip_room['id']})
+            evs = await c.wait('run_end', timeout=30)
             check('失败的那位收到 message_error，且带 name + skipped 标记',
-                  len(skip_errs) == 1 and skip_errs[0].get('skipped') is True
+                  bool(skip_errs) and skip_errs[0].get('skipped') is True
                   and skip_errs[0].get('name') == '自检·必失败',
                   str([(e.get('name'), e.get('skipped')) for e in skip_errs]))
             check('失败的模型没有把半截内容写进历史',
                   all(m.get('speaker') != '自检·必失败' for m in skip_msgs),
                   str([m.get('speaker') for m in skip_msgs]))
-            check('轮次没被中断：排在后面的模型照样发言', len(skip_msgs) == 1,
+            check('队列没被中断：排在后面的模型照样发言',
+                  len(skip_msgs) >= 1 and skip_msgs[0].get('speaker') == '自检·房间链路用',
                   str([m.get('speaker') for m in skip_msgs]))
-            check('整轮正常收尾（run_end，而不是 error 中断）', skip_run_end)
+            check('暂停后正常收尾（run_end，而不是 error 中断）',
+                  first(evs, 'run_end') is not None, str([e.get('type') for e in evs])[:120])
+            h = (await http.get(base + f'/api/rooms/{skip_room["id"]}/history')).json()
+            check('历史里没有失败者的半截内容',
+                  all((m.get('speaker') or '') != '自检·必失败'
+                      for m in (h.get('messages') or [])),
+                  str([m.get('speaker') for m in (h.get('messages') or [])])[:140])
 
             # 切回主房间继续后面的指令测试（同一连接换房间要能正常重新加入）
             evs = await ws_join(c, new_room['id'], 'selftest-owner', '自检主持', owner_key=new_key)
             check('从间隔房间切回主房间', first(evs, 'joined') is not None)
 
-            # 4b. 点名发言：流式吐字（同时验证「点名打断自动轮次」）
+            # 4b. @模型（点名）= 插队到下一个开口位（不打断正在说的那位）；流式吐字照旧
             await c.send({'type': 'point', 'roomId': new_room['id'], 'modelRef': room_mid})
             deltas, done = [], None
             deadline = time.time() + 60
@@ -1086,39 +1166,44 @@ async def main() -> int:
                   'speech_type' not in (done or {}),
                   '残留' if 'speech_type' in (done or {}) else '已移除')
 
-            # 4c. 定向回应某条消息
-            prev = done['id']
-            await c.send({'type': 'point', 'roomId': new_room['id'], 'modelRef': room_mid,
-                          'replyTo': prev})
-            fin = None
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                evs = await c.wait(['message', 'run_end'], timeout=60)
-                f = [e for e in evs if e.get('type') == 'message'
-                     and (e.get('message') or {}).get('role') == 'model'
-                     and (e.get('message') or {}).get('id') != prev]
-                if f:
-                    fin = f[-1]['message']
-                if any(e.get('type') == 'run_end' for e in evs):
-                    break
-            check('定向回应生成新发言', fin is not None)
-            check('定向回应记下 reply_to', bool((fin or {}).get('reply_to')),
-                  str((fin or {}).get('reply_to'))[:20])
+            # 4c. 停用参与者不能被点名（第 22 批护栏在队列循环制下继续生效）
+            r = await http.patch(base + f'/api/rooms/{new_room["id"]}',
+                                 json={'participants': [{'model_ref': room_mid, 'enabled': False}]},
+                                 headers=keys_header())
+            check('房主能停用本房间的参与者', r.status_code == 200, f'HTTP {r.status_code}')
+            await c.send({'type': 'point', 'roomId': new_room['id'], 'modelRef': room_mid})
+            evs = await c.wait('error', timeout=8)
+            e1 = first(evs, 'error')
+            check('停用的参与者被点名时报错（不是静默无反应）',
+                  bool(e1) and '停用' in (e1.get('error') or ''), str(e1)[:120])
+            r = await http.patch(base + f'/api/rooms/{new_room["id"]}',
+                                 json={'participants': [{'model_ref': room_mid, 'enabled': True}]},
+                                 headers=keys_header())
+            check('恢复启用成功', r.status_code == 200)
 
-            # 4d. 自由讨论 N 轮
-            await c.send({'type': 'free', 'roomId': new_room['id'], 'rounds': 2})
-            run_start = await c.wait('run_start', timeout=30)
-            total = next((e.get('total') for e in run_start if e.get('type') == 'run_start'), 0)
-            check('自由讨论按参与人数×轮次展开', total == 2, f'total={total}（1 位参与者 × 2 轮）')
+            # 4d. 点名「不是本房间参与者」的模型 → 同样被拒（护栏认房间名单，不认模型库）
+            await c.send({'type': 'point', 'roomId': new_room['id'], 'modelRef': bad_mid})
+            evs = await c.wait('error', timeout=8)
+            e2 = first(evs, 'error')
+            check('点名非本房间参与者被拒（不是模型库里存在就放行）',
+                  bool(e2) and '参与者' in (e2.get('error') or ''), str(e2)[:120])
 
-            # 4e. 打断：中途 stop，必须立刻生效
-            t0 = time.time()
+            # 4e. 旧「停止发言」按钮的 stop 指令 = 暂停（向后兼容），resume 解除
+            # ⚠️ 先 drain：4b 那条发言收尾时补发过 run_state(paused=False)，不清掉会误判。
+            await c.drain()
             await c.send({'type': 'stop', 'roomId': new_room['id']})
-            evs = await c.wait(['run_end', 'interrupted'], timeout=15)
-            cancelled = [e for e in evs if e.get('type') == 'run_end' and e.get('cancelled')]
-            check('打断立即生效（<3 秒收到取消的 run_end）',
-                  bool(cancelled) and (time.time() - t0) < 3,
-                  f'{round(time.time() - t0, 2)}s')
+            evs = await c.wait_until('run_state', lambda e: e.get('paused') is True, timeout=8)
+            check('stop 指令等价于暂停（paused=True）',
+                  any(e.get('type') == 'run_state' and e.get('paused') is True for e in evs),
+                  str([e.get('type') for e in evs])[:140])
+            await c.drain()
+            await c.send({'type': 'resume', 'roomId': new_room['id']})
+            evs = await c.wait_until('run_state', lambda e: e.get('paused') is False, timeout=8)
+            check('resume 指令解除暂停（paused=False）',
+                  any(e.get('type') == 'run_state' and e.get('paused') is False for e in evs),
+                  str([e.get('type') for e in evs])[:140])
+            await c.wait('run_end', timeout=40)
+            await c.drain()
 
         # ---------- 4f. 多人讨论：另一组连接 / 另一个房间 ----------
         mp = await multi_person_tests(http, base, ws_url, new_room['id'], new_code)
@@ -1194,7 +1279,9 @@ async def main() -> int:
         # ---------- 6b. 新提示词与角色预设库是否真的生效 ----------
         st_new = await http.get(base + '/api/state')
         cfg = (st_new.json() or {}).get('config') or {}
-        sp = cfg.get('shared_prompt') or ''
+        rule_items = ((cfg.get('rules') or {}).get('items')) or []
+        sp = ((cfg.get('rules') or {}).get('preamble') or '') + '\n' + \
+             '\n'.join((x.get('text') or '') for x in rule_items)
         check('共享提示词已换成新规则', '不要为了附和别人而改变判断' in sp, sp[:70])
         check('旧规则已删除（不再强制「必须提出至少一条不同观点」）', '必须提出至少一条' not in sp)
         check('旧字数上限已删除', '200 字以内' not in sp)
@@ -1205,6 +1292,84 @@ async def main() -> int:
         check('模型库默认不带角色（角色只设在房间参与者上）',
               all(not m.get('default_role') for m in cfg.get('models') or []),
               f"{sum(1 for m in cfg.get('models') or [] if m.get('default_role'))} 个模型残留 default_role")
+
+        # ---------- 6b-2. 房间级规则 / 角色（2026-10-15 第 17 批）----------
+        # 用户原话：「规则 和角色 增加 设置成 房间级别的，房主可以自己定义规则和角色，
+        # 可以删除和增加默认的规则，可以增加新的角色，不能删除默认角色。
+        # admin后台只管理默认的规则和角色。」三个已定档：规则**首次编辑即固化**、
+        # 默认角色**完全只读**、默认讨论室（无主房间）**只读跟默认**。
+        rules_blk = cfg.get('rules') or {}
+        ritems = rules_blk.get('items') or []
+        check('规则已改成逐条结构（前言 + items[]）',
+              isinstance(ritems, list) and len(ritems) >= 10
+              and all(t.get('id') and t.get('text') for t in ritems),
+              f'{len(ritems)} 条')
+        check('规则前言还在（迁移没丢东西）',
+              '你在参加一场多模型讨论' in (rules_blk.get('preamble') or ''),
+              (rules_blk.get('preamble') or '')[:40])
+        check('拆条没被两位数序号切坏（没有哪条尾巴挂着数字）',
+              not any((t.get('text') or '').strip()[-1:].isdigit() for t in ritems),
+              str([(t.get('text') or '')[-8:] for t in ritems])[:140])
+        check('config.json 里已无 shared_prompt 残留', 'shared_prompt' not in cfg)
+        rooms_all = cfg.get('rooms') or []
+        check('每个房间都带房间级 rules / roles 字段',
+              bool(rooms_all) and all('rules' in rr and 'roles' in rr for rr in rooms_all))
+        dft_a = next((rr for rr in rooms_all if rr.get('id') == 'room-default'), {})
+        check('默认讨论室的规则跟随后台默认（rules 为 null）',
+              dft_a.get('rules') is None, str(dft_a.get('rules'))[:40])
+        check('默认讨论室的角色也只跟默认（roles 为空）',
+              (dft_a.get('roles') or []) == [], str(dft_a.get('roles'))[:40])
+
+        # 无主房间：连「房主档」都改不动它的房间级规则（403）
+        r403s = await http.patch(base + '/api/rooms/room-default',
+                                 json={'rules': {'preamble': 'x', 'items': []}},
+                                 headers=keys_header())
+        check('默认讨论室不接受房间级规则改动（403）', r403s.status_code == 403,
+              f'HTTP {r403s.status_code}')
+        r403s2 = await http.patch(base + '/api/rooms/room-default',
+                                  json={'roles': [{'name': 'x', 'prompt': 'y'}]},
+                                  headers=keys_header())
+        check('默认讨论室不接受房间级角色改动（403）', r403s2.status_code == 403,
+              f'HTTP {r403s2.status_code}')
+
+        # 私有房间：房主能固化自己的规则 / 角色，非房主 403，恢复默认能回退
+        scj = (await http.post(base + '/api/rooms', json={'name': '自检·房间级规则'})).json()
+        sc_room = scj['room']
+        OWNER_KEYS[sc_room['id']] = scj.get('ownerKey') or ''
+        sc_rules = {'preamble': '自检前言', 'items': [{'text': '自检规则甲'}, {'text': '自检规则乙'}]}
+        r = await http.patch(base + f"/api/rooms/{sc_room['id']}", json={'rules': sc_rules},
+                             headers=keys_header())
+        back = ((r.json() or {}).get('room') or {}).get('rules') or {}
+        check('房主能把本房间规则固化成自己一份',
+              r.status_code == 200 and len(back.get('items') or []) == 2,
+              f"HTTP {r.status_code} / {len(back.get('items') or [])} 条")
+        check('固化后的规则带 id（逐条可删）',
+              all(t.get('id') for t in (back.get('items') or [])))
+        r = await http.patch(base + f"/api/rooms/{sc_room['id']}",
+                             json={'roles': [{'name': '自检角色', 'group': '自检',
+                                              'prompt': '只用于自检。'}]},
+                             headers=keys_header())
+        rback = ((r.json() or {}).get('room') or {}).get('roles') or []
+        check('房主能给本房间新增自己的角色',
+              r.status_code == 200 and len(rback) == 1 and bool(rback[0].get('id')),
+              f'HTTP {r.status_code} / {rback}')
+        check('房间自建角色不出现在默认角色库里（所以删不掉默认角色）',
+              all(x.get('id') != rback[0].get('id') for x in roles)
+              if rback else False)
+        r = await http.patch(base + f"/api/rooms/{sc_room['id']}", json={'rules': sc_rules},
+                             headers=anon_header())
+        check('非房主改房间级规则被拒（403）', r.status_code == 403, f'HTTP {r.status_code}')
+        r = await http.patch(base + f"/api/rooms/{sc_room['id']}", json={'rules': None},
+                             headers=keys_header())
+        check('「恢复为默认」= 房间规则清回 null（跟随后台默认）',
+              ((r.json() or {}).get('room') or {}).get('rules') is None,
+              str(((r.json() or {}).get('room') or {}).get('rules'))[:40])
+        # 自检自己造的这间房自己收掉（连回收站条目一起），不给用户留垃圾
+        await http.delete(base + f"/api/rooms/{sc_room['id']}", headers=keys_header())
+        for _t in ((await http.get(base + '/api/trash')).json().get('entries') or []):
+            if _t.get('room_id') == sc_room['id']:
+                await http.delete(base + '/api/trash/' + _t['id'])
+        OWNER_KEYS.pop(sc_room['id'], None)
 
         # 6c. 本机自检模型与 mock 厂商的隔离（2026-10-13 用户要求）
         check('「厂商 / API Key」里已删掉 mock 条目',
@@ -1226,9 +1391,9 @@ async def main() -> int:
               not any('mock' in (pp.get('model_ref') or '')
                       for pp in (dft.get('participants') or [])),
               str([pp.get('model_ref') for pp in (dft.get('participants') or [])]))
-        check('房间默认开启「自动轮流」（在线真人各说满一句 = 一轮）',
-              (dft.get('debate') or {}).get('auto_speak') is True,
-              str((dft.get('debate') or {}).get('auto_speak')))
+        check('默认房间的 debate 段带房间级首字超时兜底（第 24 批 model_timeout_ms）',
+              isinstance((dft.get('debate') or {}).get('model_timeout_ms'), int),
+              str((dft.get('debate') or {}).get('model_timeout_ms')))
 
         # 6d. 拉取模型列表：事实标注 + 失败原因分类（2026-10-13 逐家实测后加）
         provs = cfg.get('providers') or {}
@@ -1552,7 +1717,7 @@ async def main() -> int:
                   str(first(evs, 'join_error'))[:120])
             # 先让他说一句话：一会儿要验证「只清人、不清话」
             await cr2.send({'type': 'host_message', 'roomId': rm_room['id'],
-                            'content': '（全局移除自检）这句话应该被保留下来。', 'auto': False})
+                            'content': '（全局移除自检）这句话应该被保留下来。'})
             evs = await cr2.wait('message', timeout=20)
             check('被移除者留下了一条发言',
                   any(e.get('type') == 'message'
@@ -1667,6 +1832,29 @@ async def main() -> int:
               not any((n or '').startswith('自检')
                       for n in (dflt_sum2.get('member_names') or [])),
               str(dflt_sum2.get('member_names')))
+
+        # ---------- 9. 第 25 批：真人名单提示词按「在线 / 不在线」分组 ----------
+        # 纯函数单测：`app/prompt_text.py` 刻意不带任何 app 内依赖（尤其 config_store ——
+        # 它 import 时就会实例化 store 并写盘，见本文件开头 read_rooms_from_disk 的说明），
+        # 所以这里可以放心 import，不会和正在被测的服务抢写文件。
+        sys.path.insert(0, ROOT)
+        from app.prompt_text import humans_prompt
+        ms = [{'uid': 'u-a', 'nickname': '福老师'},
+              {'uid': 'u-b', 'nickname': '旺袅袅'}]
+        old = humans_prompt(ms, None)
+        check('拿不到在线信息时退回老口径（成员表整体当参与讨论的人）',
+              '本房间有 2 位真实用户参与讨论' in old and '福老师、旺袅袅' in old, old[:100])
+        both = humans_prompt(ms, ['u-a'])
+        check('在线 / 不在线会分组（在线的人单独点名）',
+              '此刻在线的真人：福老师' in both, both[:120])
+        check('不在线的人明确说明「看不到新消息，也不会回复」',
+              '现在不在线的：旺袅袅' in both and '也不会回复' in both, both[:170])
+        check('要求模型别把话头递给不在线的人',
+              '不要把话头递给不在线的人' in both, '')
+        off = humans_prompt(ms, [])
+        check('全都离线时不再要求「优先回应在线的人」',
+              '现在没有真人' in off and '不要等真人回应' in off, off[:150])
+        check('没有真人就不加这一段', humans_prompt([], ['u-a']) == '', '')
 
     print()
     print('=' * 60)

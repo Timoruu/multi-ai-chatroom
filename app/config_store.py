@@ -113,6 +113,10 @@ def _default_room() -> dict:
         'created_at': time.strftime('%Y-%m-%d %H:%M'),
         'participants': [],          # 新房间默认没有模型参与者，房主自己加（2026-10-14 用户定）
         'debate': {
+            # 第 24 批（队列循环制）起只认这一项：参与者自己没配 timeout_ms 时用它兜底。
+            # 下面几条是历史遗留键（轮次 / 自动轮流 / 间隔），编排器已不再读取，
+            # 留着只是不想让老前端/老配置在重发布时炸掉。
+            'model_timeout_ms': 60000,
             'free_discussion_rounds': 3,
             'auto_speak': True,
             'auto_speak_gap_ms': 3000,
@@ -127,7 +131,143 @@ def _default_room() -> dict:
         'no_owner': True,
         'open': True,
         'members': [],
+        # 房间级规则 / 角色（第 17 批）：None = 跟随默认规则；[] = 房主还没自建角色
+        'rules': None,
+        'roles': [],
     }
+
+
+# ---------------------------------------------------------------- 规则（第 17 批）
+#
+# 2026-10-15 用户要求「规则和角色都设成房间级别的」→ 规则不能继续是一个整串
+# （那样没法一条条删），改成 `{preamble, items:[{id,text}]}`。
+# 老的 `shared_prompt` 只在迁移时读一次（见 _backfill_scope），迁完这个键就删掉。
+# ⚠️ 拆分逻辑必须与前端 `renderRules` 一致（同一份事实，两边各拆各的会串）。
+#    用 finditer 找「N) 」分条点，**不要**用零宽前瞻做 re.split（两位数会被切开，见下）。
+_RULE_MARK_RE = re.compile(r'(\d+)\)\s')
+
+RULES_NOTE = (
+    '默认规则（2026-10-15 第 17 批起）。每个房间**没有自定义规则**时，模型每轮都会收到这一份。'
+    '规则已从「一整串」拆成逐条，便于在 /admin 里一条条增删；'
+    '房主可以在「房间设置 → 本房间规则」里改自己房间那份'
+    '（一动手就把当时的默认固化成本房间自己的一份，之后不再跟随这里；可一键恢复默认）。'
+    '⚠️ 本文件由服务读写，别手改；要改默认规则请用 /admin。'
+)
+
+
+def new_rule_id() -> str:
+    return 'rule-' + uuid.uuid4().hex[:8]
+
+
+def _underscore_keys(obj) -> dict:
+    """保留 `_note` 这类「下划线开头」的说明字段（清洗时不能顺手洗掉）。"""
+    return {k: v for k, v in (obj or {}).items()
+            if isinstance(k, str) and k.startswith('_')}
+
+
+def split_shared_prompt(text: str) -> dict:
+    """老格式「…(前言)…规则：1) 甲；2) 乙」→ `{preamble, items}`。
+
+    分隔靠 `N)` 标记，与前端 renderRules 的拆法一致；一条都拆不出就整段当前言。
+
+    ⚠️ **不能用 `re.split(r'(?=\\d+\\)\\s)', ...)`**：零宽前瞻匹配后会强制前进一个字符，
+    于是「10)」会被从「0)」处再切一刀，前一条规则尾巴上多出一个 "1"
+    （本批真踩过：规则 9/10 都多了尾巴，而且初次迁移也是错的、只是没露出来）。
+    这里改成 `finditer` 逐个定位「期望序号」的分条点，两位数不会被切开。
+    """
+    text = (text or '').replace('\r\n', '\n').strip()
+    if not text:
+        return {'preamble': '', 'items': []}
+    marks, expect = [], 1
+    for m in _RULE_MARK_RE.finditer(text):
+        if int(m.group(1)) != expect:
+            continue                      # 正文里偶然出现的「3)」这类不算分条点
+        marks.append((m.start(), m.end()))
+        expect += 1
+    if not marks:
+        return {'preamble': text, 'items': []}
+    preamble = text[:marks[0][0]].strip()
+    items = []
+    for i, (_s, e) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        body = text[e:end].strip()
+        if body:
+            items.append({'id': new_rule_id(), 'text': body})
+    if not items:
+        return {'preamble': text, 'items': []}
+    return {'preamble': preamble, 'items': items}
+
+
+def clean_rules(obj) -> dict:
+    """归一成 `{preamble, items:[{id,text}]}`：空条目丢掉，缺 id 就现生成。
+
+    接受字符串（= 老的整串写法，自动拆条）与 `None`/其它（= 空规则）。
+    """
+    if isinstance(obj, str):
+        return split_shared_prompt(obj)
+    if not isinstance(obj, dict):
+        return {'preamble': '', 'items': []}
+    out = _underscore_keys(obj)
+    out['preamble'] = str(obj.get('preamble') or '').replace('\r\n', '\n').strip()
+    items, seen = [], set()
+    for it in (obj.get('items') or []):
+        if isinstance(it, str):
+            text, rid = it.strip(), ''
+        elif isinstance(it, dict):
+            text = str(it.get('text') or '').strip()
+            rid = str(it.get('id') or '').strip()
+        else:
+            continue
+        if not text:
+            continue
+        if not rid or rid in seen:
+            rid = new_rule_id()
+            while rid in seen:
+                rid = new_rule_id()
+        seen.add(rid)
+        items.append({'id': rid, 'text': text})
+    out['items'] = items
+    return out
+
+
+def rules_to_text(rules) -> str:
+    """`{preamble, items}` → 真正塞进 system 提示词的文本（逐条补 `N)` 序号）。"""
+    rules = rules if isinstance(rules, dict) else {}
+    out = []
+    pre = str(rules.get('preamble') or '').strip()
+    if pre:
+        out.append(pre)
+    for i, it in enumerate(rules.get('items') or [], 1):
+        t = it.get('text') if isinstance(it, dict) else it
+        t = str(t or '').strip()
+        if t:
+            out.append('%d) %s' % (i, t))
+    return '\n'.join(out)
+
+
+def clean_roles(items) -> list:
+    """角色列表归一：id 缺了就按名字生成（可读、稳定），撞 id 的补随机后缀。
+
+    ⚠️ **默认角色与房主自建角色靠「存放位置」区分**（默认在 config.json → role_presets，
+    自建在 room.roles），所以这里**不加** system 之类的标记位 —— 房主删不掉默认角色，
+    是因为前端根本不会把默认角色交上来，而不是靠一个布尔值兜着。
+    """
+    out, seen = [], set()
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get('name') or '').strip()
+        rid = str(it.get('id') or '').strip() or _slug(name, 'role')
+        if rid in seen:
+            rid = rid + '-' + uuid.uuid4().hex[:4]
+        seen.add(rid)
+        out.append({
+            'id': rid,
+            'name': name or rid,
+            'group': str(it.get('group') or '').strip(),
+            'prompt': str(it.get('prompt') or '').strip(),
+        })
+    return out
 
 
 def read_rooms_from_disk() -> list:
@@ -193,6 +333,9 @@ class ConfigStore:
             if self._backfill_rooms():
                 changed = True
             if self._backfill_admin():
+                changed = True
+            # 规则列表化 + 房间级 规则/角色（2026-10-15 第 17 批）
+            if self._backfill_scope():
                 changed = True
         if changed:
             self.save()
@@ -272,6 +415,15 @@ class ConfigStore:
             if 'members' not in r:
                 r['members'] = []
                 changed = True
+            # 第 24 批（队列循环制）：房间级首字超时兜底。老房间没有 → 补 60 秒，
+            # 补一次就够（有值一律不动，那是用户自己的设置）。
+            db = r.get('debate')
+            if not isinstance(db, dict):
+                r['debate'] = db = {}
+                changed = True
+            if db.get('model_timeout_ms') is None:
+                db['model_timeout_ms'] = 60000
+                changed = True
             if r.get('id') == DEFAULT_ROOM_ID:
                 if not r.get('no_owner'):
                     r['no_owner'] = True
@@ -306,6 +458,40 @@ class ConfigStore:
         })
         self._data['admin'] = base
         return True
+
+    def _backfill_scope(self) -> bool:
+        """规则列表化 + 房间级 规则·角色 的迁移与补齐（2026-10-15 第 17 批）。
+
+          1. 老的 `shared_prompt`（一整串）→ `rules`（`{preamble, items}`）。
+             迁完**把老键删掉**：内容已被完整保留在 rules 里（前言 + 逐条），
+             留着只会让人分不清哪一份才算数。
+          2. `rules` 结构不全 → 用 clean_rules 归一（顺带保证每条都有 id）。
+          3. 每个房间补 `rules: None`（跟随默认）与 `roles: []`（房主自建的）。
+             ⚠️ **已有值一律不动** —— 那是用户自己的设置，热重载不能覆盖。
+        """
+        changed = False
+        legacy = self._data.pop('shared_prompt', None)
+        if legacy is not None:
+            changed = True
+        # 老键 `shared_prompt_note` 是给「一整串」写的说明书，格式已经变了 → 一并摘掉
+        if self._data.pop('shared_prompt_note', None) is not None:
+            changed = True
+        if 'rules' not in self._data:
+            self._data['rules'] = dict(_note=RULES_NOTE, **split_shared_prompt(legacy or ''))
+            changed = True
+        else:
+            clean = clean_rules(self._data.get('rules'))
+            if clean != self._data.get('rules'):
+                self._data['rules'] = clean
+                changed = True
+        for r in self._data.get('rooms', []):
+            if 'rules' not in r:
+                r['rules'] = None
+                changed = True
+            if 'roles' not in r:
+                r['roles'] = []
+                changed = True
+        return changed
 
     def reload_if_changed(self) -> bool:
         """手工改了 `config.json` 或 `data/room_index.json` 时自动拾取（mtime 变了就重载）。
@@ -367,25 +553,72 @@ class ConfigStore:
                 return m
         return None
 
-    def shared_prompt(self) -> str:
-        with self._lock:
-            return self._data.get('shared_prompt', '')
+    # ---------- 规则（默认 + 房间级，第 17 批）----------
 
-    # ---------- 角色预设库 ----------
+    def default_rules(self) -> dict:
+        """后台的**默认规则**（/admin 里编辑的那一份）。"""
+        with self._lock:
+            return clean_rules(self._data.get('rules'))
+
+    def room_rules(self, room_id: str) -> dict | None:
+        """房间固化的那一份规则；`None` = 这个房间跟随默认。
+
+        用户 2026-10-15 选定「首次编辑即固化」：房主一动手编辑，就把当时的默认复制成
+        房间自己的一份，之后不再跟随后续的默认改动；「恢复为默认」= 清回 None。
+
+        ⚠️ **无主房间（默认讨论室）永远返回 None**：用户定了「默认讨论室的规则/角色
+        只读、跟随后台默认」，所以就算 rooms 里被塞了值也不认。
+        """
+        room = self.room(room_id)
+        if not room or room.get('no_owner'):
+            return None
+        got = room.get('rules')
+        return clean_rules(got) if isinstance(got, dict) else None
+
+    def effective_rules(self, room_id: str) -> dict:
+        """本房间实际生效的规则 = 房间那份（若有）否则后台默认。"""
+        return self.room_rules(room_id) or self.default_rules()
+
+    def rules_text(self, room_id: str = '') -> str:
+        """真正塞进 system 提示词的规则文本（按房间取生效值）。"""
+        return rules_to_text(self.effective_rules(room_id) if room_id else self.default_rules())
+
+    # ---------- 角色（默认 + 房间级，第 17 批）----------
 
     def role_presets(self) -> list:
-        """角色预设列表（下拉栏的数据源）。"""
+        """**默认**角色库（/admin 里编辑的那一份，也是下拉栏的兜底数据源）。"""
         with self._lock:
             block = self._data.get('role_presets') or {}
             items = block.get('items') if isinstance(block, dict) else block
-            return copy.deepcopy(items or [])
+            return clean_roles(items or [])
 
-    def role_map(self) -> dict:
-        return {p.get('id'): p for p in self.role_presets() if p.get('id')}
+    def room_roles(self, room_id: str) -> list:
+        """房主在本房间**自建**的角色（默认角色不存在这里 —— 所以删不掉默认角色）。
 
-    def role_of(self, role_id: str) -> dict:
+        ⚠️ 无主房间不认：跟随后台默认（2026-10-15 用户定）。
+        """
+        room = self.room(room_id)
+        if not room or room.get('no_owner'):
+            return []
+        return copy.deepcopy(clean_roles(room.get('roles') or []))
+
+    def effective_roles(self, room_id: str) -> list:
+        """本房间能选的角色 = 默认角色 + 房主自建（同 id 时以默认那份为准）。"""
+        out, seen = [], set()
+        for x in (self.role_presets() + self.room_roles(room_id)):
+            rid = x.get('id')
+            if rid and rid not in seen:
+                seen.add(rid)
+                out.append(x)
+        return out
+
+    def role_map(self, room_id: str = '') -> dict:
+        src = self.effective_roles(room_id) if room_id else self.role_presets()
+        return {p.get('id'): p for p in src if p.get('id')}
+
+    def role_of(self, role_id: str, room_id: str = '') -> dict:
         """id → {id, name, prompt}；空 id 或查不到都返回空角色。"""
-        p = self.role_map().get((role_id or '').strip())
+        p = self.role_map(room_id).get((role_id or '').strip())
         if not p:
             return {'id': '', 'name': '', 'prompt': ''}
         return {'id': p.get('id'), 'name': p.get('name') or p.get('id'),
@@ -460,7 +693,7 @@ class ConfigStore:
                 continue
             # 角色只看房间参与者的 role_override（模型库不再存默认角色）；
             # 存的是预设 id，这里展开成名称 + 提示词，留空就是不设角色
-            role = self.role_of(p.get('role_override') or '')
+            role = self.role_of(p.get('role_override') or '', room_id)
             r['role_id'] = role['id']
             r['role_name'] = role['name']
             r['role'] = role['prompt']
@@ -584,33 +817,18 @@ class ConfigStore:
             self.save()
             return True
 
-    # ---------- 规则 / 角色库（只有 /admin 能改）----------
+    # ---------- 默认规则 / 默认角色库（只有 /admin 能改）----------
 
-    def set_shared_prompt(self, text: str) -> str:
-        """规则 = 每个模型每轮都会收到的那份共享 system 提示词。"""
+    def set_default_rules(self, obj) -> dict:
+        """整体覆盖**默认规则**（/admin 专用，权限在 main.py 把关）。"""
         with self._lock:
-            self._data['shared_prompt'] = (text or '').replace('\r\n', '\n').strip()
+            self._data['rules'] = clean_rules(obj)
             self.save()
-            return self._data['shared_prompt']
+            return copy.deepcopy(self._data['rules'])
 
     def set_role_presets(self, items: list) -> list:
-        """角色库整体覆盖写。id 缺了就按名字生成一个（可读、稳定）。"""
-        clean = []
-        seen = set()
-        for it in (items or []):
-            if not isinstance(it, dict):
-                continue
-            name = (it.get('name') or '').strip()
-            rid = (it.get('id') or '').strip() or _slug(name, 'role')
-            if rid in seen:
-                rid = rid + '-' + uuid.uuid4().hex[:4]
-            seen.add(rid)
-            clean.append({
-                'id': rid,
-                'name': name or rid,
-                'group': (it.get('group') or '').strip(),
-                'prompt': (it.get('prompt') or '').strip(),
-            })
+        """整体覆盖**默认角色库**。id 缺了就按名字生成一个（可读、稳定）。"""
+        clean = clean_roles(items)
         with self._lock:
             block = self._data.get('role_presets')
             if isinstance(block, dict):
@@ -718,6 +936,8 @@ class ConfigStore:
                 'members': [],
                 'participants': participants or [],
                 'debate': {
+                    # 第 24 批：房间级首字超时兜底（参与者自己的 timeout_ms 优先）。
+                    'model_timeout_ms': 60000,
                     'free_discussion_rounds': 3,
                     'auto_speak': True,
                     'strategy_when_auto': 'round_robin',
@@ -726,6 +946,9 @@ class ConfigStore:
                         if participants else None,
                 },
                 'history_file': f'data/rooms/{rid}.json',
+                # 房间级规则 / 角色（第 17 批）：新房间一律先跟随默认、没有自建角色
+                'rules': None,
+                'roles': [],
             }
             self._data.setdefault('rooms', []).append(room)
             self.save()
@@ -767,6 +990,14 @@ class ConfigStore:
             for k in ('name', 'participants', 'debate'):
                 if k in patch and patch[k] is not None:
                     room[k] = patch[k]
+            # 房间级「规则 / 角色」（第 17 批，权限在 main.py 把关：房主 + 非无主房间）：
+            #   rules = None → 跟随后台默认；给 dict → 本房间固化的那一份。
+            #   roles 只装**房主自建**的角色，默认角色不在里面（靠存放位置区分）。
+            if 'rules' in patch:
+                v = patch.get('rules')
+                room['rules'] = clean_rules(v) if isinstance(v, dict) else None
+            if 'roles' in patch:
+                room['roles'] = clean_roles(patch.get('roles') or [])
             # 公开 / 私有 互相切换（2026-10-14，仅房主）：
             #   变公开 → 房间号作废（清空），谁都能进；
             #   变私有 → 没有号就现发一个（否则谁都进不来，也没号可分享）。

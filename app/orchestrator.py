@@ -1,237 +1,159 @@
-"""讨论编排：公共消息池 + 轮次策略 + 立即生效的打断。
+"""讨论编排（2026-10-16 第 24 批：**队列循环制**，替换原来的「轮次制」）。
 
-三条硬约束（BRIEF 第一/三节）：
-1. **公共消息池**：所有发言写进同一份 messages，每次调用都把完整历史传给当前发言者。
-2. **用户手动指令 > 自动调度**：新指令到达时直接取消正在跑的流式输出并接管，
-   不做「等这轮跑完再说」。已吐出的半截内容按约定**直接丢弃**。
-3. **终止条件只作兜底**：什么时候结束由用户决定；成本护栏只做保险丝。
+用户 2026-10-16 定稿的规则（原「自动轮流 / 手动点名 / 轮次 / 间隔 / 自由讨论 / 总结」全部作废）：
 
-2026-10-13 15:41 用户改了默认调度（原「默认用户点名」作废）：
-- 房间里有参与者**依次自动各发言一次**，不用手动点；
-- 「自动轮流」是房间级开关（`rooms[].debate.auto_speak`，默认 true），关掉就回到纯手动点名；
-- **手动点名永远优先**：点某位参与者的「发言」会立刻打断本轮剩余安排，让他马上接着说
-  （这就是「指定某个模型继续发言」）；@某人则让他排在本轮第一位。
-- **顺序 = 房间 participants 数组的顺序**（config.json 里手写的顺序，页面右栏「本房间参与者」
-  列表从上到下就是这个顺序）。@点名只把他挪到本轮第一个，其余人相对顺序不变。
-- **轮内间隔**：换人间隔默认 3 秒（`rooms[].debate.auto_speak_gap_ms`，下限 0.5 秒 / 上限 60 秒；
-  下限 2026-10-15 由 3 秒放宽到 0.5 秒），一次提交里有 2 位以上发言人才生效。倒计时期间可以直接打断或点名。
+1. **顺序 = 房主手动排序**（右栏拖动模型卡，写回 `rooms[].participants` 的数组顺序）。
+2. **真人发言即触发**：任何真人说一句，模型队列开始走；真人消息即时上屏，
+   **不打断**正在说话的模型（真人和模型不冲突）。
+3. **串行**：同一时刻只有一个模型在思考/发言（`await` 串行，物理上不可能有两个）。
+   前一个想完说完，下一个才**基于最新上下文**开始想 —— 所以每条发言都是针对最新的对话，
+   不会出现「拿着过时上下文的老答案」（成语接龙场景的关键）。
+4. **多模型持续发言**：按顺序循环（1→2→3→1→2→3…）**不设波次上限**，直到真人按「暂停」。
+5. **单模型不循环**：房间里只有 1 个启用模型时，说完这一句就停，等真人下一句（一人一句）。
+6. **暂停 / 继续**：任何真人都能按「暂停」。按下后**当前这个模型不受影响（说完）**，
+   队列里其余的不再开口；真人自己照常用。恢复**必须点「继续」**（真人发言不会自动解除暂停）。
+   暂停期间如果真的指名 @ 了某位模型，那一位仍会开口一次（真人显式指令优先）。
+7. **首字超时（可按参与者单独设）**：优先看这一位参与者的 `participants[].timeout_ms`，
+   没有就退到房间默认 `rooms[].debate.model_timeout_ms`，都默认 60 秒；只影响本房间。
+   等首字超过这个时间 → 判它卡住，跳过并广播提示，队列继续。
+8. **@ 语义**：@模型 → 插队到下一个开口位（不打断当前）；@真人 → 只做提醒（前端响铃 + 闪烁）。
+9. **没有第二道保险**（用户明确：「不要保险」）—— 只靠暂停/继续，token 会一直消耗，
+   这是「持续发言」的代价，房主自己掌握。
 
-2026-10-13 17:5x **多人讨论**：一轮的触发条件从「真人发一句」改成「真人都说完」——
-- 房间当前**在线**的真人每人说满一句就点亮自己（后面再说是补充）；
-- **全员点亮**才让参与者依次发言（`begin_round`）；谁等不及可以用「手动启动新一轮」
-  （`start_round`，**所有真人**都能按，跳过还没发言的人）；
-- 刚加入的人从**下一轮**开始算（本轮不要求他，否则中途进来会把整轮卡住）；
-- 有人离开 / 被踢，立刻从本轮要求里摘掉（同上，防止卡死）；
-- 真人阶段状态只存内存（`_members` / `_rs`），服务器重启就重来，不写盘；
-- 单人使用时的行为**不变**：一个人说话 = 点亮 = 全员点亮 → 立刻触发模型轮。
-
-
-2026-10-13 按用户要求重写提示词骨架（见 config.json 的 shared_prompt）：
-- 取消「请用【陈述】【质疑】【回应】标签开头」那一段，模型完全自主回答；
-- 同时**删掉整套发言类型机制**（不再解析标签、不再按位置兜底推断、不再落 speech_type 字段）。
-  原因：标签要求一旦撤掉，兜底推断会把所有发言记成「质疑」，比不做更糟。
-- 因为取消了 200 字上限，历史更容易变长，MAX_TRANSCRIPT_CHARS 由 14000 抬到 30000 抵偿。
+保留的硬约束：
+- 公共消息池：所有发言写进同一份 messages，**每次发言前重新读历史**（所以新消息大家都能看到）。
+- 全局成本护栏（cost_guard.max_total_calls）仍在，作为保险丝。
+- 调用失败 / 超时 → 跳过这位、队列继续（不再整轮报废）。
 """
 from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
 
 from . import providers
 from .config_store import ConfigStore
+from .prompt_text import humans_prompt
 from .room_store import RoomStore, new_id, now_hm
 
 MAX_TRANSCRIPT_CHARS = 30000
 TAIL_KEEP = 10
 HEAD_KEEP = 2
 
-# 轮内间隔（2026-10-13 用户要求「至少 3 秒以上」；2026-10-15 用户要求把下限放开到 0.5 秒）：
-# 一次提交里有 2 位以上发言人时，上一位说完不立刻接话，先等这么久再让别人开口。
-# 作用有二：① 发言人换人时留出可感知的节奏，避免连续刷屏；
-#          ② 给主持人留一个「打断 / 点名」的窗口（点名的优先级永远高于自动调度）。
-# 房间级配置键：rooms[].debate.auto_speak_gap_ms，下限 0.5 秒，上限 60 秒。
-# ⚠️ 2026-10-15：关掉思考并把发言限长之后，一轮只剩十几秒，间隔占比反而变大 → 下限放开。
-DEFAULT_GAP_MS = 3000
-MIN_GAP_MS = 500
-MAX_GAP_MS = 60000
+# 首字等待上限（房间级 rooms[].debate.model_timeout_ms）
+DEFAULT_FIRST_TIMEOUT_MS = 60000
+MIN_FIRST_TIMEOUT_MS = 3000
+MAX_FIRST_TIMEOUT_MS = 600000
 
 
 class Orchestrator:
-    def __init__(self, store: ConfigStore, rooms: RoomStore, broadcast) -> None:
+    def __init__(self, store: ConfigStore, rooms: RoomStore, broadcast,
+                 online_provider=None) -> None:
         self.store = store
         self.rooms = rooms
         self.broadcast = broadcast
-        self.task: asyncio.Task | None = None
-        self.current: dict | None = None
         self.total_calls = 0
-        self._run_lock = asyncio.Lock()
-        # 多人讨论的「真人阶段」状态（只存内存：服务器重启就重来，不写盘）
-        #   _members[room_id] = 当前**在线**的真人 uid 集合
-        #   _rs[room_id]      = {'required': 本轮要求发言的 uid, 'spoken': 已点亮 uid,
-        #                        'point_at': 本轮里最后一次 @ 的模型}
-        self._members: dict[str, set] = {}
-        self._rs: dict[str, dict] = {}
+        self.current: dict | None = None
+        # room_id -> {'running','paused','cursor','jump','current','task'}
+        # 只存内存：服务器重启就重来（历史照旧从磁盘读）。
+        self._st: dict[str, dict] = {}
+        # 第 25 批：`online_provider(room_id) -> [uid, ...]` = 此刻在这个房间挂着连接的真人。
+        # main.py 把 `_online_uids` 传进来（在线信息本来就有 —— 右栏的在线圆点用的就是它），
+        # 提示词用它把真人分成「在线 / 不在线」两组；None = 拿不到在线信息（退回老口径）。
+        self._online_uids = online_provider
 
     # ------------------------------------------------------------ 状态
 
-    def is_running(self) -> bool:
-        return self.task is not None and not self.task.done()
+    def _blank(self) -> dict:
+        return {'running': False, 'paused': False, 'cursor': 0, 'jump': [],
+                'current': None, 'task': None}
+
+    def _s(self, room_id: str) -> dict:
+        return self._st.setdefault(room_id, self._blank())
+
+    def order(self, room_id: str) -> list[str]:
+        """发言顺序 = 房主排好的参与者顺序（config 里的数组顺序），只留启用中的。"""
+        return [p['model_ref'] for p in self.store.resolve_room_participants(room_id)]
+
+    def run_state(self, room_id: str) -> dict:
+        st = self._st.get(room_id) or {}
+        return {'running': bool(st.get('running')),
+                'paused': bool(st.get('paused')),
+                'current': st.get('current'),
+                'cursor': int(st.get('cursor') or 0),
+                'order': self.order(room_id)}
 
     def status(self) -> dict:
-        return {
-            'running': self.is_running(),
-            'current': self.current,
-            'total_calls': self.total_calls,
-            'max_calls': self.store.cost_guard().get('max_total_calls'),
-        }
+        cur = None
+        for st in self._st.values():
+            if st.get('current'):
+                cur = st['current']
+                break
+        return {'running': any(bool(st.get('running')) for st in self._st.values()),
+                'current': cur,
+                'total_calls': self.total_calls,
+                'max_calls': self.store.cost_guard().get('max_total_calls')}
 
-    # ------------------------------------------------------------ 真人阶段（多人讨论）
+    def first_timeout_ms(self, room_id: str, model_ref: str = '') -> int:
+        """首字超时（毫秒）：**优先看这一位参与者自己的 `timeout_ms`**，
+        没有就用房间默认 `debate.model_timeout_ms`，再没有就用 60 秒。
 
-    def _open_phase(self, room_id: str) -> dict:
-        """开一个真人发言阶段：要求「当前在线的所有真人」各说一句。"""
-        rs = {'required': set(self._members.get(room_id) or set()),
-              'spoken': set(), 'point_at': None}
-        self._rs[room_id] = rs
-        return rs
+        （用户 2026-10-16 定：「模型发言超时时间可以在房间参与者模型中配置，仅影响本房间模型」。
+        所以是**每位参与者一条**，配在右栏「本房间参与者」的模型卡上。）
+        """
+        room = self.store.room(room_id) or {}
+        entry = next((p for p in (room.get('participants') or [])
+                      if p.get('model_ref') == model_ref), None)
+        raw = (entry or {}).get('timeout_ms')
+        if raw is None:
+            raw = (room.get('debate') or {}).get('model_timeout_ms')
+        try:
+            val = int(raw) if raw is not None else DEFAULT_FIRST_TIMEOUT_MS
+        except (TypeError, ValueError):
+            val = DEFAULT_FIRST_TIMEOUT_MS
+        return max(MIN_FIRST_TIMEOUT_MS, min(val, MAX_FIRST_TIMEOUT_MS))
 
+    # 兼容旧调用（真人阶段概念已删除，这里只留下最小占位，避免 main.py 大改）
     def register_member(self, room_id: str, uid: str) -> None:
-        """有人加入房间。**本轮不把他算进要求**（他从中途进来，不该卡住本轮），
-        下一个人阶段开始时自然就把他算上了。"""
-        if not uid:
-            return
-        self._members.setdefault(room_id, set()).add(uid)
-        if room_id not in self._rs:
-            self._open_phase(room_id)
+        self._s(room_id)
 
     def unregister_member(self, room_id: str, uid: str) -> None:
-        """有人离开 / 被踢。要从本轮要求里摘掉，否则整轮永远等不到「全员」而卡死。"""
-        (self._members.get(room_id) or set()).discard(uid)
-        rs = self._rs.get(room_id)
-        if rs:
-            rs['required'].discard(uid)
-            rs['spoken'].discard(uid)
+        pass
 
-    def round_state(self, room_id: str) -> dict:
-        rs = self._rs.get(room_id) or {}
-        return {'required': sorted(rs.get('required') or []),
-                'spoken': sorted(rs.get('spoken') or []),
-                'point_at': rs.get('point_at')}
-
-    def _phase_complete(self, room_id: str) -> bool:
-        rs = self._rs.get(room_id) or {}
-        req, spoken = rs.get('required') or set(), rs.get('spoken') or set()
-        return bool(req) and req <= spoken
-
-    async def _broadcast_round(self, room_id: str) -> None:
-        await self._safe_broadcast({'type': 'round_state', 'roomId': room_id,
-                                    **self.round_state(room_id)})
-
-    async def _cancel_current(self) -> None:
-        """取消正在跑的编排：丢弃半截输出，立刻腾出位置给新指令。"""
-        task = self.task
-        self.task = None
-        self.current = None
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-    async def interrupt(self, room_id: str | None = None) -> dict:
-        was = bool(self.current)
-        await self._cancel_current()
-        if was:
-            await self.broadcast({'type': 'interrupted', 'roomId': room_id})
-        await self.broadcast({'type': 'status', **self.status()})
-        return {'ok': True, 'interrupted': was}
+    async def _bc_state(self, room_id: str) -> None:
+        await self._safe_broadcast({'type': 'run_state', 'roomId': room_id,
+                                    **self.run_state(room_id)})
 
     # ------------------------------------------------------------ 指令入口
 
-    async def point_speaker(self, room_id: str, model_ref: str, instruction: str = '',
-                            reply_to: str | None = None) -> dict:
-        """手动点名 = 「指定某位接着说」。
-
-        立即打断本轮剩余安排（_submit 会取消正在跑的 task），被点名者马上发言；
-        轮次不前进（算在当前轮里的追加发言）。
-        """
-        cur = int(self.rooms.load(room_id).get('round') or 0)
-        steps = [{'model_ref': model_ref, 'instruction': instruction,
-                  'reply_to': reply_to, 'round': cur or 1}]
-        await self._submit(room_id, steps, '点名发言（本轮剩余安排已取消）')
-        return {'ok': True, 'queued': 1}
-
-    async def free_discussion(self, room_id: str, rounds: int | None = None) -> dict:
-        room = self.store.room(room_id)
-        if not room:
-            return {'ok': False, 'error': '房间不存在'}
-        parts = self.store.resolve_room_participants(room_id)
-        if not parts:
-            return {'ok': False,
-                    'error': '这个房间没有可发言的模型 —— 到右侧「本房间参与者」点「添加模型」，'
-                             '或把已停用的参与者启用'}
-        n = int(rounds or (room.get('debate') or {}).get('free_discussion_rounds') or 3)
-        n = max(1, min(n, 20))
-        start_round = int(self.rooms.load(room_id).get('round') or 0)
-        steps = []
-        for r in range(n):
-            for p in parts:
-                steps.append({'model_ref': p['model_ref'], 'instruction': '',
-                              'reply_to': None,
-                              'round': start_round + r + 1})
-        self.rooms.bump_round(room_id, start_round + n)
-        await self._submit(room_id, steps, f'自由讨论 {n} 轮')
-        return {'ok': True, 'queued': len(steps), 'rounds': n}
-
-    async def summarize(self, room_id: str, model_ref: str) -> dict:
-        room = self.store.room(room_id)
-        if not room:
-            return {'ok': False, 'error': '房间不存在'}
-        debate = room.get('debate') or {}
-        ref = model_ref or debate.get('moderator_summary_model_ref')
-        if not ref:
-            return {'ok': False, 'error': '没有指定总结模型'}
-        steps = [{'model_ref': ref, 'instruction': '现在进入收敛环节：请输出三段——共识 / 未谈拢的分歧 / 结论。',
-                  'reply_to': None, 'converge': True}]
-        await self._submit(room_id, steps, '指定总结')
-        return {'ok': True, 'model_ref': ref}
-
-    def _auto_speak_enabled(self, room_id: str, explicit=None) -> bool:
-        """自动轮流开关：本次指令显式指定 > 房间 debate.auto_speak > 默认开启。"""
-        if explicit is not None:
-            return bool(explicit)
-        room = self.store.room(room_id) or {}
-        debate = room.get('debate') or {}
-        if 'auto_speak' in debate:
-            return bool(debate.get('auto_speak'))
-        return True
-
-    def gap_ms(self, room_id: str) -> int:
-        """轮内间隔（毫秒）：房间 debate.auto_speak_gap_ms，缺省 3000，钳到 [500, 60000]。
-
-        下限 2026-10-14 由 3000 放宽到 500：模型思考关闭后每位只需 1~3 秒，3 秒空档变得很浪费。
-        """
-        room = self.store.room(room_id) or {}
-        debate = room.get('debate') or {}
-        raw = debate.get('auto_speak_gap_ms')
-        try:
-            val = int(raw) if raw is not None else DEFAULT_GAP_MS
-        except (TypeError, ValueError):
-            val = DEFAULT_GAP_MS
-        return max(MIN_GAP_MS, min(val, MAX_GAP_MS))
-
     async def host_message(self, room_id: str, content: str, uid: str = '',
                            nickname: str = '', point_at: str | None = None,
-                           auto=None) -> dict:
-        """真人发言 —— **只记录 + 点亮自己，不再立刻触发模型**（2026-10-13 用户改的规则）。
+                           auto=None, mentions: dict | None = None,
+                           point_at_list: list[str] | None = None) -> dict:
+        """真人发言：即时上屏 + 视情况启动/继续模型队列。
 
-        一轮成立的条件：房间当前在线的真人都说过一句（每人说满一句就点亮，后面再说是补充）。
-        全员点亮才让参与者依次发言；谁等不及，就用「手动启动新一轮」提前放行（见 start_round）。
+        - 真人消息**永远即时生效**，不打断正在说话的模型（真人和模型不冲突）。
+        - 已暂停 → 不自动启动（要恢复得点「继续」）；但 @ 了某位模型时，那一位会说一次。
+        - 单模型房间：说完即停，所以每条真人消息都会把它叫起来一次（一人一句）。
+        - `point_at_list`（第 26 批）：消息里 @ 到的**全部**模型，按出现先后依次插队；
+          老前端的单个 `point_at` 仍兼容（等于列表只有一位）。
         """
         text = (content or '').strip()
         if not text:
             return {'ok': False, 'error': '内容为空'}
+
+        ok_models = self.order(room_id)
+        men = {'users': [], 'models': [], 'names': []}
+        if isinstance(mentions, dict):
+            member_uids = {m.get('uid') for m in self.store.room_members(room_id)}
+            men = {
+                'users': [u for u in (mentions.get('users') or []) if u in member_uids],
+                'models': [r for r in (mentions.get('models') or []) if r in ok_models],
+                'names': [str(n)[:40] for n in (mentions.get('names') or [])][:20],
+            }
+        # ⚠️ 真人 uid 绝不能被当成 model_ref 送进队列（第 23 批的护栏继续生效）
+        if point_at and point_at not in ok_models:
+            point_at = None
+
         who = (nickname or '').strip() or '某人'
         msg = {
             'id': new_id(),
@@ -239,205 +161,244 @@ class Orchestrator:
             'speaker': who,
             'uid': uid or None,
             'model_ref': None,
-            'round': None,
             'content': text,
+            'mentions': men,
             'ts': now_hm(),
         }
         self.rooms.append(room_id, msg)
         await self.broadcast({'type': 'message', 'roomId': room_id, 'message': msg})
 
-        rs = self._rs.get(room_id)
-        if rs is None:
-            self._open_phase(room_id)
-            rs = self._rs[room_id]
-        if uid:
-            rs['spoken'].add(uid)
-        if point_at:
-            rs['point_at'] = point_at          # 本轮最后一次 @ 的人排第一位
-        await self._broadcast_round(room_id)
+        # 第 26 批：@ 几位模型就排队几位（按消息里出现的先后；真人 uid / 非参与者已被
+        # ok_models 过滤掉）。⚠️ 必须放在消息上屏**之后**——模型开口前会重读全部历史，
+        # 先插队会让它看不到刚发的这条。老前端的单个 point_at 仍兼容 = 列表只有一位。
+        pointed: list[str] = []
+        for ref in ([point_at] + list(point_at_list or [])):
+            if ref and ref in ok_models and ref not in pointed:
+                pointed.append(ref)
+        for ref in pointed:
+            await self.point_model(room_id, ref, quiet=True)
 
-        if not self._phase_complete(room_id):
-            return {'ok': True, 'message': msg, 'steps': 0, 'complete': False,
-                    'spoken': len(rs['spoken']), 'required': len(rs['required'])}
+        if not self.order(room_id):
+            # 一个可发言的模型都没有：真人照样能把话记进池子，但必须说清楚「模型不会回」，
+            # 而不是让用户对着空气等（沿用第 22 批「明确报错、不许静默」的取向）。
+            await self._safe_broadcast({
+                'type': 'error', 'roomId': room_id,
+                'error': '这个房间没有可发言的模型 —— 到右侧「本房间参与者」点「添加模型」，'
+                         '或把已停用的参与者启用'})
+            return {'ok': True, 'message': msg, 'started': False}
 
-        # ⚠️ auto 必须透传给 begin_round：否则房间关掉「自动轮流」后，
-        # 最后一位真人一说完仍然会自动放模型开口，开关等于失效。
-        res = await self.begin_round(room_id, by=who, auto=auto)
-        res['message'] = msg
-        return res
+        started = await self.ensure_running(room_id)
+        return {'ok': True, 'message': msg, 'started': started}
 
-    async def begin_round(self, room_id: str, by: str = '',
-                          point_at: str | None = None, auto=None,
-                          reason: str = '') -> dict:
-        """让房间参与者依次发言 = 一轮真正的「模型阶段」。
+    async def point_model(self, room_id: str, model_ref: str, quiet: bool = False) -> dict:
+        """把某位模型插到「下一个开口位」（不打断正在说的那一位）。
 
-        - 自动轮流开：被 @ 的人排第一（没有 @ 就按房间顺序），其他人依次跟上；
-        - 自动轮流关：没人开口（静候手动点名）。
-
-        真人阶段在这里归零，且**先开新阶段、再提交模型任务**：这样模型发言期间真人插的
-        话算进下一轮，不会把刚跑完的那一阶段又算一遍。
+        @模型 就靠它；暂停状态下也允许它开一次口（真人显式指令优先于暂停）。
         """
         if not self.store.room(room_id):
             return {'ok': False, 'error': '房间不存在'}
-        # ⚠️ 2026-10-14 起「新建的房间默认没有任何模型参与者」（用户定），所以这里的空房间
-        # 从「静默什么都不发生」改成**明确报错** —— 否则用户发完话看到真人阶段被归零、
-        # 模型一个都不开口，完全不知道是自己没加人。注意要在 _open_phase() 之前判，
-        # 免得白清掉本轮真人阶段。
-        parts = [p['model_ref'] for p in self.store.resolve_room_participants(room_id)]
-        if not parts:
-            return {'ok': False,
-                    'error': '这个房间没有可发言的模型 —— 到右侧「本房间参与者」点「添加模型」，'
-                             '或把已停用的参与者启用'}
-        rs = self._rs.get(room_id) or {}
-        point_at = point_at or rs.get('point_at')
-        self._open_phase(room_id)
-        await self._broadcast_round(room_id)
+        entry = next((p for p in (self.store.room(room_id).get('participants') or [])
+                      if p.get('model_ref') == model_ref), None)
+        name = ((self.store.resolve(model_ref) or {}).get('display_name')) or model_ref
+        if entry is None:
+            return {'ok': False, 'error': f'「{name}」不是本房间的参与者'}
+        if not entry.get('enabled', True):
+            return {'ok': False, 'error': f'「{name}」在这个房间里是停用状态，先启用再 @ 他'}
+        st = self._s(room_id)
+        if model_ref not in st['jump']:
+            st['jump'].append(model_ref)
+        # ⚠️ `force=True`：暂停状态下也**必须**为被 @ 的这一位起一次队列
+        #    （真人显式指令优先于暂停）。不加 force 的话，暂停时 ensure_running 会被
+        #    `paused` 挡住 → 插队排上了却永远没人开口 —— 2026-10-16 自检抓到的真 bug。
+        await self.ensure_running(room_id, force=True)
+        return {'ok': True, 'queued': model_ref}
 
-        auto_on = self._auto_speak_enabled(room_id, auto)
-        order: list[str] = []
-        if point_at:
-            order.append(point_at)
-            if auto_on:
-                order += [r for r in parts if r != point_at]
-        elif auto_on:
-            order = list(parts)
-        if not order:
-            return {'ok': True, 'steps': 0, 'auto': auto_on, 'complete': True, 'by': by}
+    async def pause(self, room_id: str, by: str = '') -> dict:
+        """暂停：当前这个模型**说完**就停，队列里其余的不再开口；真人不受影响。"""
+        st = self._s(room_id)
+        st['paused'] = True
+        await self._bc_state(room_id)
+        await self._safe_broadcast({'type': 'notice', 'roomId': room_id,
+                                    'text': (f'{by} 暂停了模型发言' if by else '已暂停模型发言')
+                                            + '（正在说的这位说完就停；要接着说点「继续」）'})
+        return {'ok': True, 'paused': True}
 
-        round_no = int(self.rooms.load(room_id).get('round') or 0) + 1
-        steps = [{'model_ref': r, 'instruction': '', 'reply_to': None,
-                  'round': round_no, 'by': by} for r in order]
-        self.rooms.bump_round(room_id, round_no)
-        why = reason or '全员发言完毕'
-        if auto_on:
-            first = '先点名后依次' if point_at else '依次发言'
-            label = f'第 {round_no} 轮 · {why} · {first}（{len(steps)} 位）'
-        else:
-            label = f'第 {round_no} 轮 · 手动点名'
-        if by:
-            label += f'｜由 {by} 启动'
-        await self._submit(room_id, steps, label)
-        return {'ok': True, 'steps': len(steps), 'round': round_no,
-                'auto': auto_on, 'complete': True, 'by': by}
+    async def resume(self, room_id: str, by: str = '') -> dict:
+        """继续：解除暂停并让队列接着走。"""
+        st = self._s(room_id)
+        st['paused'] = False
+        await self._bc_state(room_id)
+        await self._safe_broadcast({'type': 'notice', 'roomId': room_id,
+                                    'text': (f'{by} 让模型继续发言' if by else '继续发言')})
+        await self.ensure_running(room_id)
+        return {'ok': True, 'paused': False}
 
-    async def start_round(self, room_id: str, by: str = '') -> dict:
-        """手动启动新一轮 = 「不等别人了，现在就让模型说」：跳过还没发言的真人。
+    async def ensure_running(self, room_id: str, force: bool = False) -> bool:
+        """没有在跑、且没被暂停、且有可用模型 → 起一个队列循环。返回是否新起了。
 
-        用户 2026-10-13 定：**所有真实用户都能按**（不只房主）。
+        `force=True`（只有 @点名 用）：**暂停中也照起**，好让被 @ 的那位开口一次
+        —— 队列循环里 `paused` 的分支会「只为这一位服务一次」就收工。
         """
-        if not self.store.room(room_id):
-            return {'ok': False, 'error': '房间不存在'}
-        return await self.begin_round(room_id, by=by, reason='手动启动新一轮')
+        st = self._s(room_id)
+        if st.get('running'):
+            return False
+        if st.get('paused') and not force:
+            return False
+        if not self.order(room_id):
+            return False
+        st['running'] = True          # 先占位，避免并发重复起
+        st['task'] = asyncio.create_task(self._loop(room_id))
+        return True
 
-    async def _submit(self, room_id: str, steps: list, label: str) -> None:
-        await self._cancel_current()
-        self.task = asyncio.create_task(self._run(room_id, steps, label))
+    async def interrupt(self, room_id: str | None = None) -> dict:
+        """立刻掐断（清空历史等场景用）：丢弃半截输出，不打招呼。"""
+        was = False
+        for rid, st in list(self._st.items()):
+            if room_id and rid != room_id:
+                continue
+            task = st.get('task')
+            st['task'] = None
+            st['running'] = False
+            st['current'] = None
+            st['jump'] = []
+            if task and not task.done():
+                was = True
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.current = None
+        await self._safe_broadcast({'type': 'status', **self.status()})
+        if room_id:
+            await self._bc_state(room_id)
+        return {'ok': True, 'interrupted': was}
 
-    # ------------------------------------------------------------ 执行
+    # 兼容旧名（main.py 的 clear 分支用它）
+    async def clear_interrupt(self, room_id: str | None = None) -> dict:
+        return await self.interrupt(room_id)
 
-    async def _run(self, room_id: str, steps: list, label: str) -> None:
+    # ------------------------------------------------------------ 队列循环
+
+    async def _loop(self, room_id: str) -> None:
+        st = self._s(room_id)
+        st['running'] = True
+        await self._safe_broadcast({'type': 'run_start', 'roomId': room_id,
+                                    'total': len(self.order(room_id))})
+        await self._bc_state(room_id)
         try:
-            await self.broadcast({'type': 'run_start', 'roomId': room_id,
-                                  'label': label, 'total': len(steps)})
-            # 轮内间隔只在「一次提交里有 2 位以上发言人」时生效；单条（点名 / 总结）不用等。
-            gap = self.gap_ms(room_id) if len(steps) > 1 else 0
-            # 2026-10-15 用户要求：某位模型调用失败 → 跳过它继续下一位，不再整轮报废。
-            # _speak 返回 'ok'（说了）/ 'skip'（失败跳过）/ 'abort'（成本护栏，整轮立刻停）。
-            skipped = 0
-            for idx, step in enumerate(steps):
-                if idx and gap:
-                    await self._gap_pause(room_id, step, idx, gap)
-                outcome = await self._speak(room_id, step, idx, len(steps))
+            while True:
+                paused = bool(st.get('paused'))
+                # 暂停中且没人被 @ → 收工
+                if paused and not st['jump']:
+                    break
+                parts = self.order(room_id)
+                if not parts:
+                    await self._safe_broadcast({'type': 'error', 'roomId': room_id,
+                                                'error': '这个房间没有可发言的模型 —— 到右侧「本房间参与者」'
+                                                         '点「添加模型」，或把已停用的参与者启用'})
+                    break
+                ref = None
+                while st['jump']:
+                    cand = st['jump'].pop(0)
+                    if cand in parts:
+                        ref = cand
+                        break
+                if ref is None:
+                    if paused:
+                        # 暂停着、又没有人被 @（或排队的都不在房间里）→ 收工，
+                        # **不能**退回轮转顺序随便挑一位开口。
+                        break
+                    ref = parts[st['cursor'] % len(parts)]
+                nxt = (parts.index(ref) + 1) % len(parts) if ref in parts else st['cursor']
+                outcome = await self._speak(room_id, ref)
+                st['cursor'] = nxt
                 if outcome == 'abort':
                     break
-                if outcome != 'ok':
-                    skipped += 1
-            if skipped and skipped == len(steps) and len(steps) > 1:
-                await self.broadcast({'type': 'error', 'roomId': room_id,
-                                      'error': f'本轮 {len(steps)} 位模型全部调用失败，一条发言都没拿到'
-                                               '（多为额度 / 网络 / 模型 ID 问题），已全部跳过。'})
-            await self.broadcast({'type': 'run_end', 'roomId': room_id, 'label': label})
+                if paused:
+                    # 暂停中：把被 @ 的几位**依次各说一句**（第 26 批改：原来只服务一位，
+                    # 用户 @ 两位只有第一位开口）。@ 队列清空就收工，继续保持暂停。
+                    if not st['jump']:
+                        break
+                    continue
+                if len(parts) == 1:
+                    # 单模型：说完即停（一人一句），等真人下一句
+                    break
         except asyncio.CancelledError:
-            await self._safe_broadcast({'type': 'run_end', 'roomId': room_id,
-                                        'label': label, 'cancelled': True})
             raise
-        except Exception as exc:
+        except Exception as exc:                                    # noqa: BLE001
             await self._safe_broadcast({'type': 'error', 'roomId': room_id, 'error': repr(exc)})
         finally:
+            st['running'] = False
+            st['current'] = None
+            st['task'] = None
             self.current = None
-            self.task = None
+            await self._safe_broadcast({'type': 'run_end', 'roomId': room_id})
+            await self._bc_state(room_id)
             await self._safe_broadcast({'type': 'status', **self.status()})
 
-    async def _gap_pause(self, room_id: str, step: dict, idx: int, gap: int) -> None:
-        """换人间隔：广播倒计时后等待。sleep 期间被 cancel 会直接向上抛 CancelledError，
-        整轮当场结束——这正是「打断优先」要的效果。"""
-        nxt = self.store.resolve(step.get('model_ref') or '') or {}
-        await self.broadcast({'type': 'gap', 'roomId': room_id, 'idx': idx, 'ms': gap,
-                              'next': nxt.get('display_name') or step.get('model_ref')})
-        try:
-            await asyncio.sleep(gap / 1000.0)
-        finally:
-            await self._safe_broadcast({'type': 'gap_end', 'roomId': room_id})
+    async def _speak(self, room_id: str, model_ref: str) -> str:
+        """让一位模型发言（串行：这里 `await` 不返回，下一个请求就不会发出去）。
 
-    async def _safe_broadcast(self, event: dict) -> None:
-        try:
-            await self.broadcast(event)
-        except Exception:
-            pass
-
-    async def _speak(self, room_id: str, step: dict, idx: int, total: int) -> str:
-        """让一位模型发言。返回 'ok' / 'skip' / 'abort'：
-        - 'skip'  = 这位没说成（不在模型库 / 调用失败），跳过、轮次继续（2026-10-15 用户要求）
-        - 'abort' = 触发全局成本护栏，整轮立刻停（提示语本来就写着「本轮停止」）"""
-        model_ref = step.get('model_ref')
+        返回 'ok' / 'skip' / 'abort'：skip = 这位没说成（库/额度/超时/失败），队列继续。
+        """
         cfg = self.store.resolve(model_ref or '')
         if not cfg:
-            await self.broadcast({'type': 'error', 'roomId': room_id,
-                                  'error': f'模型 {model_ref} 不在模型库里，已跳过'})
+            await self._safe_broadcast({'type': 'error', 'roomId': room_id,
+                                        'error': f'模型 {model_ref} 不在模型库里，已跳过'})
             return 'skip'
 
         guard = self.store.cost_guard()
         cap = guard.get('max_total_calls')
         if cap and self.total_calls >= int(cap):
-            await self.broadcast({'type': 'error', 'roomId': room_id,
-                                  'error': f'已达全局调用上限 {cap} 次（成本护栏），本轮停止。'})
+            await self._safe_broadcast({'type': 'error', 'roomId': room_id,
+                                        'error': f'已达全局调用上限 {cap} 次（成本护栏），已停止。'})
             return 'abort'
 
+        # ⚠️ 每次发言前**重新读历史** —— 这就是「还没开口的模型能看到新消息」的实现。
         history = self.rooms.messages(room_id)
-        round_no = step.get('round') or (int(self.rooms.load(room_id).get('round') or 0) + 1)
-
         msg = {
             'id': new_id(),
             'role': 'model',
             'speaker': cfg['display_name'],
             'model_ref': cfg['model_ref'],
             'provider': cfg.get('provider'),
-            'round': round_no,
-            'reply_to': step.get('reply_to'),
             'content': '',
             'reasoning': '',
             'streaming': True,
             'ts': now_hm(),
         }
-        self.current = {'roomId': room_id, 'modelRef': cfg['model_ref'],
-                        'modelName': cfg['display_name'], 'idx': idx, 'total': total,
-                        'step': idx + 1}
-        await self.broadcast({'type': 'message_start', 'roomId': room_id,
-                              'message': msg, 'idx': idx, 'total': total})
-        await self.broadcast({'type': 'status', **self.status()})
+        st = self._s(room_id)
+        st['current'] = {'roomId': room_id, 'modelRef': cfg['model_ref'],
+                         'modelName': cfg['display_name']}
+        self.current = st['current']
+        await self.broadcast({'type': 'message_start', 'roomId': room_id, 'message': msg})
+        await self._safe_broadcast({'type': 'status', **self.status()})
 
-        messages = self._build_messages(cfg, room_id, step, history)
+        messages = self._build_messages(cfg, room_id, history)
         self.total_calls += 1
         started = time.time()
+        timeout_ms = self.first_timeout_ms(room_id, model_ref)
         content, reasoning = '', ''
         error = None
+        first_seen = False
 
+        it = providers.stream_chat(cfg, messages, hint={
+            'previous_speaker': self._previous_speaker(history),
+            'question': self._question(history),
+        }).__aiter__()
         try:
-            async for kind, piece in providers.stream_chat(cfg, messages, hint={
-                'previous_speaker': self._previous_speaker(history),
-                'question': self._question(history),
-                'round': round_no,
-            }):
+            while True:
+                try:
+                    if not first_seen:
+                        item = await asyncio.wait_for(it.__anext__(), timeout=timeout_ms / 1000.0)
+                        first_seen = True
+                    else:
+                        item = await it.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    error = (f'「{cfg["display_name"]}」等了 {timeout_ms // 1000} 秒还没开口，'
+                             f'已跳过（首字超时，可在房间设置里调）')
+                    break
+                kind, piece = item
                 if kind == 'content':
                     content += piece
                     await self.broadcast({'type': 'delta', 'roomId': room_id,
@@ -448,21 +409,35 @@ class Orchestrator:
                                           'msgId': msg['id'], 'kind': 'reasoning', 'text': piece})
         except asyncio.CancelledError:
             # 约定：打断时半截输出直接丢弃，不写进历史
+            try:
+                await it.aclose()
+            except Exception:                                       # noqa: BLE001
+                pass
             raise
-        except Exception as exc:
+        except Exception as exc:                                    # noqa: BLE001
             error = str(exc)
+        finally:
+            try:
+                await it.aclose()
+            except Exception:                                       # noqa: BLE001
+                pass
+
+        st['current'] = None
+        self.current = None
 
         if error:
-            # 调用失败 → 跳过这位、轮次继续（原来这里 raise ProviderError，_run 一接住整轮就报废，
-            # 界面上除了「调用失败」还会再弹一条 ProviderError）。message_error 照发（前端照常提示），
-            # 多带 name / skipped 两个字段，让前端把「已跳过」说清楚。
-            await self.broadcast({'type': 'message_error', 'roomId': room_id,
-                                  'msgId': msg['id'], 'error': error,
-                                  'name': cfg['display_name'], 'skipped': True,
-                                  'elapsed': round(time.time() - started, 2)})
+            await self._safe_broadcast({'type': 'message_error', 'roomId': room_id,
+                                        'msgId': msg['id'], 'error': error,
+                                        'name': cfg['display_name'], 'skipped': True,
+                                        'elapsed': round(time.time() - started, 2)})
+            return 'skip'
+        if not content.strip():
+            await self._safe_broadcast({'type': 'message_error', 'roomId': room_id,
+                                        'msgId': msg['id'], 'error': '模型没有返回任何内容，已跳过',
+                                        'name': cfg['display_name'], 'skipped': True,
+                                        'elapsed': round(time.time() - started, 2)})
             return 'skip'
 
-        # 不再摘发言类型标签：模型完全自主回答，正文原样入库（2026-10-13 取消标签机制）
         final = dict(msg)
         final.update({
             'content': content.strip(),
@@ -474,6 +449,12 @@ class Orchestrator:
         await self.broadcast({'type': 'message', 'roomId': room_id, 'message': final})
         return 'ok'
 
+    async def _safe_broadcast(self, event: dict) -> None:
+        try:
+            await self.broadcast(event)
+        except Exception:                                           # noqa: BLE001
+            pass
+
     def _previous_speaker(self, history: list) -> str:
         for m in reversed(history):
             if m.get('role') == 'model':
@@ -481,10 +462,7 @@ class Orchestrator:
         return ''
 
     def _question(self, history: list) -> str:
-        """本轮真人说的话（从末尾往前收集连续的 user 消息，遇到模型发言就停）。
-
-        多人讨论后「问题」不再是一个人一句话，所以把本阶段几位真人的发言都算上，各带昵称。
-        """
+        """末尾连续几条真人发言（遇到模型发言就停），各带昵称。"""
         out = []
         for m in reversed(history):
             if m.get('role') != 'user':
@@ -495,10 +473,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------ 上下文装配
 
-    def _build_messages(self, cfg: dict, room_id: str, step: dict, history: list) -> list:
-        room = self.store.room(room_id) or {}
+    def _build_messages(self, cfg: dict, room_id: str, history: list) -> list:
         parts: list[str] = []
-        shared = self.store.shared_prompt()
+        shared = self.store.rules_text(room_id)
         if shared:
             parts.append(shared)
         parts.append(f'你的名字是「{cfg["display_name"]}」' +
@@ -511,39 +488,29 @@ class Orchestrator:
             roster.append(f'{p["display_name"]}（{p.get("role_name") or "无特定角色"}）')
         if roster:
             parts.append('本房间的参与者：' + '；'.join(roster))
-        # 多人讨论（2026-10-13）：告诉模型「真人不止一个，各有昵称」。
-        # 之前这里只字未提真人，提示词里一律称「主持人」，多人后模型分不清是谁在说话。
-        humans = [m.get('nickname') for m in self.store.room_members(room_id) if m.get('nickname')]
-        if humans:
-            parts.append('本房间有 ' + str(len(humans)) + ' 位真实用户参与讨论：'
-                         + '、'.join(humans) + '。他们的发言也会按昵称出现在讨论记录里，'
-                         + '请针对具体的人回应，不要笼统说「用户」。')
-        # 原「请用【陈述】【质疑】【回应】的标签开头」一段已按用户要求取消（2026-10-13）：
-        # 模型完全自主回答，不再自报类型，也不再由服务端推断类型。
-        if step.get('converge'):
-            parts.append('这是收敛环节：请严格输出三段——「共识」「未谈拢的分歧」「结论」，每段写清楚是谁的观点。')
+        # 第 25 批：真人名单按「在线 / 不在线」分组。此前只给成员表（= 所有进过房间的人），
+        # 模型不知道谁下线了，会把话头递给根本看不到消息的人 ——
+        # 线上实测它点名了不在线的「旺袅袅」（2026-10-19 用户报）。
+        online = list(self._online_uids(room_id)) if self._online_uids else None
+        line = humans_prompt(self.store.room_members(room_id), online)
+        if line:
+            parts.append(line)
+        parts.append('房间里的模型是按顺序轮流发言的：一次只有一位在说，你之前可能已经说过，'
+                     '也可能后面还会轮到你。请只针对**目前为止最新的讨论内容**发言，'
+                     '不要重复你之前说过的内容。')
         system = '\n'.join(parts)
 
         body = self._transcript(history)
         req = []
         if body:
-            req.append('以下是本次讨论到目前为止的全部发言（按时间顺序）：\n\n' + body)
+            req.append('以下是本次讨论到目前为止的**全部**发言（按时间顺序）：\n\n' + body)
         else:
             req.append('讨论还没有开始，你是第一位发言者。')
-        reply_to = step.get('reply_to')
-        requester = (step.get('by') or '').strip() or '有人'
-        if reply_to:
-            quoted = next((m for m in history if m.get('id') == reply_to), None)
-            if quoted:
-                req.append(f'{requester}要求你专门针对这条发言作答——\n『{quoted.get("speaker")}（第{quoted.get("round")}轮）：{quoted.get("content")}』')
-        instr = (step.get('instruction') or '').strip()
-        if instr:
-            req.append(f'{requester}现在的要求：' + instr)
-        elif not body:
-            req.append('还没有人提出问题，请简短自我介绍并说明你会从什么角度参与。')
+        if body:
+            req.append('现在轮到你发言。请针对最新的一条或几条发言推进讨论；'
+                       '如果要质疑或回应某位发言者，请写出对方的名字。')
         else:
-            req.append('现在轮到你发言。如果你要质疑或回应某位发言者，请写出对方的名字。')
-        req.append(f'（本次是第 {step.get("round") or (int(self.rooms.load(room_id).get("round") or 0) + 1)} 轮）')
+            req.append('还没有人提出问题，请简短自我介绍并说明你会从什么角度参与。')
 
         return [{'role': 'system', 'content': system},
                 {'role': 'user', 'content': '\n\n'.join(req)}]
@@ -569,7 +536,7 @@ class Orchestrator:
         history = self.rooms.messages(room_id)
         out = [f'# 讨论纪要 · {room.get("name")}', '']
         out.append(f'- 房间 ID：`{room_id}`')
-        out.append(f'- 参与者：' + '、'.join(p['display_name'] for p in self.store.resolve_room_participants(room_id)))
+        out.append('- 参与者：' + '、'.join(p['display_name'] for p in self.store.resolve_room_participants(room_id)))
         out.append(f'- 发言条数：{len(history)}')
         out.append(f'- 导出时间：{time.strftime("%Y-%m-%d %H:%M:%S")}')
         out.append('')
@@ -577,8 +544,7 @@ class Orchestrator:
         out.append('')
         for m in history:
             who = m.get('speaker') or '未署名'
-            rnd = f' · 第 {m.get("round")} 轮' if m.get('round') else ''
-            out.append(f'**{who}**{rnd}　`{m.get("ts", "")}`')
+            out.append(f'**{who}**　`{m.get("ts", "")}`')
             out.append('')
             out.append((m.get('content') or '').strip())
             out.append('')

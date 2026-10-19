@@ -141,7 +141,9 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(401, '需要管理员登录（/admin）')
 
 
-orch = Orchestrator(store, rooms, broadcast)
+# 第 25 批：把「谁在线」交给编排器 —— `_online_uids()` 按「有没有 WS 连接挂在这个房间」
+# 算在线（右栏的在线圆点用的就是它），提示词据此把真人分成在线 / 不在线两组。
+orch = Orchestrator(store, rooms, broadcast, online_provider=_online_uids)
 
 
 # ---------------------------------------------------------------- 页面
@@ -269,7 +271,7 @@ async def _drop_session(ws: WebSocket) -> None:
     if rid:
         orch.unregister_member(rid, uid or '')
         await _broadcast_members(rid)
-        await broadcast({'type': 'round_state', 'roomId': rid, **orch.round_state(rid)})
+        await broadcast({'type': 'run_state', 'roomId': rid, **orch.run_state(rid)})
 
 
 def _room_public(room_id: str) -> dict | None:
@@ -400,16 +402,16 @@ async def _do_join(ws: WebSocket, msg: dict) -> None:
         'ownerKey': owner_key if is_owner else '',
         'members': _members_view(room_id),
         'owner_uid': owner_uid,
-        'round_state': orch.round_state(room_id),
+        'run_state': orch.run_state(room_id),
     }, ensure_ascii=False))
     await _broadcast_members(room_id)
-    await broadcast({'type': 'round_state', 'roomId': room_id, **orch.round_state(room_id)})
+    await broadcast({'type': 'run_state', 'roomId': room_id, **orch.run_state(room_id)})
 
 
 # WS 指令分权（2026-10-13 用户定）：
 #   成员（凭房间号加入）只能操作聊天功能；房主多出「房间成员管理 + 房间配置」。
 #   ⚠️ 自由讨论 / 清空历史 会成倍烧额度或毁掉记录，划归房主。
-WS_OWNER_ONLY = {'free', 'clear'}
+WS_OWNER_ONLY = {'clear'}
 
 
 async def _handle(ws: WebSocket, msg: dict) -> None:
@@ -441,31 +443,27 @@ async def _handle(ws: WebSocket, msg: dict) -> None:
     if kind == 'host_message':
         res = await orch.host_message(room_id, msg.get('content') or '', uid=uid,
                                      nickname=nick, point_at=msg.get('pointAt') or None,
-                                     auto=msg.get('auto'))
+                                     auto=msg.get('auto'), mentions=msg.get('mentions'),
+                                     point_at_list=msg.get('pointAtList') or None)
         if not res.get('ok'):
             await _ws_error(ws, res.get('error') or '发送失败')
 
-    elif kind == 'start_round':
-        res = await orch.start_round(room_id, by=nick or '')
-        if not res.get('ok'):
-            await _ws_error(ws, res.get('error') or '启动失败')
+    elif kind == 'pause':
+        await orch.pause(room_id, by=nick or '')
+
+    elif kind == 'resume':
+        await orch.resume(room_id, by=nick or '')
 
     elif kind == 'point':
-        await orch.point_speaker(room_id, msg.get('modelRef') or '',
-                                 msg.get('instruction') or '', msg.get('replyTo') or None)
-
-    elif kind == 'free':
-        res = await orch.free_discussion(room_id, msg.get('rounds'))
-        if not res.get('ok'):
-            await _ws_error(ws, res.get('error') or '启动失败')
-
-    elif kind == 'summarize':
-        res = await orch.summarize(room_id, msg.get('modelRef') or '')
-        if not res.get('ok'):
-            await _ws_error(ws, res.get('error') or '总结失败')
+        # @模型（旧客户端的点名按钮也走这里）= 插队到下一个开口位，不打断正在说的那位。
+        # 被护栏拒（不是本房间参与者 / 已停用）时把原因弹回聊天室，不让用户「点了没反应」。
+        _p_res = await orch.point_model(room_id, msg.get('modelRef') or '')
+        if not _p_res.get('ok'):
+            await _ws_error(ws, _p_res.get('error') or '点名失败')
 
     elif kind == 'stop':
-        await orch.interrupt(room_id)
+        # 兼容旧的「停止发言」按钮：现在等于「暂停」（当前这位说完就停）
+        await orch.pause(room_id, by=nick or '')
 
     elif kind == 'leave':
         await _drop_session(ws)
@@ -710,14 +708,19 @@ async def api_admin_password(request: Request, payload: dict = Body(...)):
 
 @app.post('/api/prompt')
 async def api_set_prompt(request: Request, payload: dict = Body(...)):
-    """改「规则」（shared_prompt）：每个模型每轮都会收到的共享 system 提示词。
+    """改**默认规则**（/admin 专用）：每个房间没有自定义规则时，模型每轮都会收到这一份。
 
-    只有 /admin 能改；普通用户在左栏只看到只读的当前规则。
+    2026-10-15 第 17 批：规则从「一整串」改成可逐条增删的 `{preamble, items[]}`，
+    所以这里收结构体（仍兼容旧的 `shared_prompt` 整串写法，会自动拆条）。
+    房主要改**自己房间**那份规则走 `PATCH /api/rooms/{rid}`（见 api_update_room）。
+
+    只有 /admin 能改；普通用户在左栏只看到只读的**本房间生效规则**。
     """
     _require_admin(request)
-    text = store.set_shared_prompt(payload.get('shared_prompt') or '')
+    rules = store.set_default_rules(
+        payload.get('rules') if 'rules' in payload else payload.get('shared_prompt'))
     await broadcast({'type': 'config_changed'})
-    return {'ok': True, 'shared_prompt': text}
+    return {'ok': True, 'rules': rules}
 
 
 @app.post('/api/roles')
@@ -779,7 +782,7 @@ async def api_admin_remove_user(nickname: str, request: Request):
     for rid in affected:
         orch.unregister_member(rid, uid)
         await _broadcast_members(rid)
-        await broadcast({'type': 'round_state', 'roomId': rid, **orch.round_state(rid)})
+        await broadcast({'type': 'run_state', 'roomId': rid, **orch.run_state(rid)})
     await broadcast({'type': 'config_changed'})   # 房间卡上的成员数要跟着变
     return {'ok': True, 'removed': hit.get('nickname'), 'uid': uid,
             'rooms': affected, 'kicked': kicked,
@@ -832,14 +835,17 @@ async def api_update_room(rid: str, request: Request, payload: dict = Body(...))
     if not room:
         raise HTTPException(404, '房间不存在')
     if not _is_owner_of(request, rid):
-        if 'name' in payload or 'participants' in payload:
-            raise HTTPException(403, '只有房主能改房间配置和参与者')
+        if any(k in payload for k in ('name', 'participants', 'rules', 'roles')):
+            raise HTTPException(403, '只有房主能改房间配置、参与者、房间级规则和角色')
         debate = payload.get('debate')
         if not isinstance(debate, dict):
             raise HTTPException(403, '只有房主能改这项设置')
         keep = dict(room.get('debate') or {})
         keep['auto_speak'] = bool(debate.get('auto_speak', keep.get('auto_speak', True)))
         payload = {'debate': keep}
+    elif ('rules' in payload or 'roles' in payload) and store.room_is_ownerless(rid):
+        # 用户 2026-10-15 定：默认讨论室的规则 / 角色**只读、跟随后台默认**
+        raise HTTPException(403, '默认讨论室的规则和角色跟随后台默认，不能单独修改')
     room = store.update_room(rid, payload)
     await broadcast({'type': 'config_changed'})
     return {'ok': True, 'room': _room_public(rid), 'rooms': _rooms_summary()}
@@ -924,7 +930,7 @@ async def api_kick_member(rid: str, uid: str, request: Request):
                 pass
             _clients.pop(ws, None)
     await _broadcast_members(rid)
-    await broadcast({'type': 'round_state', 'roomId': rid, **orch.round_state(rid)})
+    await broadcast({'type': 'run_state', 'roomId': rid, **orch.run_state(rid)})
     return {'ok': True, 'members': _members_view(rid), 'rooms': _rooms_summary()}
 
 

@@ -219,12 +219,12 @@ check(iRulesBlock > 0 && iRulesBlock < iRightCol && iRolesBlock > iRulesBlock &&
   '规则 / 角色模块应在左栏（房间之后、右栏之前）');
 
 const rulesHtml = A.byId.rulesBox._html;
-const wantRules = (cfg.shared_prompt.match(/\d+\)\s*[^；]+/g) || []).length;
+const wantRules = ((cfg.rules || {}).items || []).length;
 const gotRules = (rulesHtml.match(/class="info-idx"/g) || []).length;
 check(wantRules >= 10 && gotRules === wantRules,
   `规则条数应为 ${wantRules}，实际渲染 ${gotRules}`);
 check(rulesHtml.includes('你在参加一场多模型讨论'),
-  '规则模块应显示 shared_prompt 的开头（前言）');
+  '规则模块应显示默认规则的开头（前言）');
 check(rulesHtml.includes('同意某人时必须补充新理由') && rulesHtml.includes('分歧发生时直接点明分歧在哪'),
   '规则模块应显示头尾两条规则原文');
 const strayNum = (rulesHtml.match(/class="info-text">\d+\)/g) || []).length;
@@ -242,6 +242,98 @@ check(appjs.includes('function renderRules') && appjs.includes('function renderR
   'app.js 应有 renderRules / renderRoles');
 check(/renderRules\(\);\s*\n\s*renderRoles\(\);/.test(appjs),
   'renderAll 里应调用 renderRules / renderRoles');
+
+/* ---- A2b) 房间级规则 / 角色（2026-10-15 第 17 批，用户要求）----
+   用户原话：「规则 和角色 增加 设置成 房间级别的，房主可以自己定义规则和角色，
+   可以删除和增加默认的规则，可以增加新的角色，不能删除默认角色。admin后台只管理默认的规则和角色。」
+   三个已定档：规则**首次编辑即固化**、默认角色**完全只读**、默认讨论室（无主房间）**只读跟默认**。 */
+
+check(Array.isArray((cfg.rules || {}).items) && cfg.rules.items.length >= 10
+  && cfg.rules.items.every((x) => x.id && x.text),
+  '默认规则应是逐条结构（每条都有 id / text），不再是「一整串」');
+check(cfg.rules.preamble && typeof cfg.rules.preamble === 'string',
+  '默认规则应带前言（rules.preamble）');
+check(!Object.prototype.hasOwnProperty.call(cfg, 'shared_prompt'),
+  'config.json 里不该再留 shared_prompt（已迁移成 rules）');
+cfg.rooms.forEach((r) => {
+  check('rules' in r && 'roles' in r,
+    `房间 ${r.id} 应带房间级 rules（null=跟默认）与 roles（房主自建）`);
+  check(!r.no_owner || r.rules === null,
+    `无主房间 ${r.id} 的规则必须跟随后台默认（rules 为 null）`);
+});
+
+check(appjs.includes('function effectiveRules') && appjs.includes('function roomRulesBlock'),
+  'app.js 应有 roomRulesBlock / effectiveRules（房间那份优先，否则默认）');
+check(appjs.includes('function canEditScope') && /canEditScope[\s\S]{0,400}?no_owner/.test(appjs)
+  && /canEditScope[\s\S]{0,400}?myKeys\[room\.id\]/.test(appjs),
+  'app.js 应明确「无主房间不给改房间级规则 / 角色」，且入口按「有没有这一间的房主钥匙」判');
+check(appjs.includes('function openScopeDialog') && appjs.includes('function saveScope')
+  && appjs.includes('function collectScope'),
+  'app.js 应有房间级规则 / 角色弹窗（打开 / 收集 / 保存）');
+check(appjs.includes('rules: sc.custom ?'),
+  '保存时：自定义过才发房间那份，否则发 null（= 跟随默认）');
+check(appjs.includes('data-a="rule-rm"') && appjs.includes('data-a="role-rm"'),
+  '规则要能逐条删（含默认规则）、自建角色要能删');
+check(appjs.includes('function defaultRoles') && appjs.includes('function roomRoles')
+  && appjs.includes('function rolePresets'),
+  'app.js 的角色应是「默认 + 本房间自建」两层');
+check(/sc\.roles\.map[\s\S]{0,400}?本房间自建/.test(appjs) || appjs.includes('本房间自建'),
+  '默认角色与自建角色在弹窗里要区分开（默认只读）');
+check(appjs.includes('function splitRuleText') && !/split\(\/\/\(\?=\d/.test(appjs),
+  '前端拆规则也不许用零宽前瞻 split（两位数序号会被切坏）');
+
+check(html.includes('id="dlgScope"') && html.includes('id="btnRoomScope"'),
+  'index.html 应有房间级规则 / 角色弹窗与入口按钮');
+check(html.includes('id="scopeRuleList"') && html.includes('id="scopeRoleList"')
+  && html.includes('id="scopeRuleList"') && html.includes('id="scopePreamble"'),
+  '房间级弹窗应有规则列表 / 角色列表 / 前言输入框');
+check(html.includes('id="btnRuleReset"') && html.includes('id="btnRuleAdd"')
+  && html.includes('id="btnRoleAddRoom"') && html.includes('id="btnScopeSave"'),
+  '房间级弹窗应有：恢复为默认 / 添加规则 / 新增角色 / 保存');
+check(html.includes('id="rulesSrc"') && html.includes('id="rolesSrc"'),
+  '左栏规则 / 角色应标出「这一份是哪来的」（默认还是本房间自定义）');
+
+check(cfgStore.includes('def room_rules') && cfgStore.includes('def effective_rules')
+  && cfgStore.includes('def rules_text'),
+  'config_store 应有 room_rules / effective_rules / rules_text');
+check(cfgStore.includes('def room_roles') && cfgStore.includes('def effective_roles')
+  && cfgStore.includes('def role_of'),
+  'config_store 应有 room_roles / effective_roles / role_of（带房间上下文）');
+check(/def room_rules[\s\S]{0,700}?room\.get\('no_owner'\)/.test(cfgStore),
+  '无主房间的规则必须强制回落默认（不认房间自己那份）');
+check(/def room_roles[\s\S]{0,700}?room\.get\('no_owner'\)/.test(cfgStore),
+  '无主房间的角色必须强制回落默认');
+check(cfgStore.includes('def _backfill_scope') && cfgStore.includes('split_shared_prompt')
+  && cfgStore.includes('RULES_NOTE'),
+  'config_store 应有 shared_prompt → rules 的迁移与补齐');
+check(cfgStore.includes('_RULE_MARK_RE.finditer'),
+  '拆规则要用 finditer 逐个定位分条点（零宽前瞻 re.split 会把两位序号切成「…；1」+「0) …」）');
+check(cfgStore.includes('def set_default_rules'),
+  '写接口应改名为 set_default_rules（admin 只管默认那份）');
+check(cfgStore.includes("room['roles'] = clean_roles") && cfgStore.includes('def clean_roles'),
+  'update_room 应支持房间级 roles（自建角色），并有 clean_roles 清洗');
+check(cfgStore.includes("room['rules'] = clean_rules"),
+  'update_room 应支持房间级 rules（dict 固化 / null 跟默认）');
+
+check(mainpy.includes('默认讨论室的规则和角色跟随后台默认，不能单独修改'),
+  'main.py 应拒掉无主房间的房间级规则 / 角色改动（403）');
+check(mainpy.includes('store.set_default_rules'),
+  '/api/prompt 应改成写「默认规则」');
+check(/payload\.get\('rules'\)[\s\S]{0,200}?shared_prompt/.test(mainpy),
+  '/api/prompt 应兼容旧的 shared_prompt 整串入参（自动拆条）');
+check(orchpy.includes('self.store.rules_text(room_id)'),
+  'orchestrator 应按房间取生效规则（rules_text）');
+
+check(adminjs.includes('function snapshotRules') && adminjs.includes('rules: body'),
+  'admin.js 的规则编辑器应提交结构体（{preamble, items}），不再是整串');
+check(adminjs.includes('function rulesFromConfig') && adminjs.includes('function renderRulesEdit'),
+  'admin.js 应能渲染逐条默认规则列表');
+check(adminHtml.includes('id="rulesPreamble"') && adminHtml.includes('id="btnRuleNew"'),
+  'admin.html 的默认规则要有「前言」与「新增规则」');
+check(adminHtml.includes('默认规则') && adminHtml.includes('默认角色'),
+  'admin 后台文案应明确它管的是「默认」规则 / 角色');
+check(adminHtml.includes('管不到已经自定义过的房间'),
+  'admin 规则面板要说清「改的是默认值，管不到已自定义的房间」');
 
 /* ---- A3) 角色预设库合法性 + 发言类型机制彻底移除 */
 
@@ -274,50 +366,91 @@ check(!html.includes('placeholder="例如 挑刺担当'), '角色输入框应已
 check(appjs.includes('function roleOf') && appjs.includes('role_presets'),
   'app.js 应能从 role_presets 解析角色');
 
-/* ---- A4) 自动轮流（一轮一次，可点名打断） */
+/* ---- A4) 队列循环制：取消自动/手动之分，真人发言即触发（2026-10-16 第 24 批）----
+   用户定稿：不再有「自动轮流 / 手动点名 / 轮次 / 间隔 / 自由讨论 / 总结」——
+   只剩一条规则：**真人一发言，模型就按房主排好的顺序接着说下去**，直到真人按「暂停」。 */
 
-check(html.includes('id="autoSpeak"') && html.includes('自动轮流'),
-  'index.html 控制条应有「自动轮流」开关');
-check(appjs.includes('function autoSpeakOn') && appjs.includes('function toggleAutoSpeak'),
-  'app.js 应有 autoSpeakOn / toggleAutoSpeak');
-check(/send\(\{\s*\n?\s*type: 'host_message'[\s\S]{0,300}?uid: S\.uid, nickname: S\.nickname/.test(appjs),
-  '发消息时应把 auto（自动轮流开关）与 uid/昵称一起发给后端');
-check(appjs.includes("debate") && /auto_speak: on/.test(appjs),
-  '切换开关应写回房间的 debate.auto_speak（配置是唯一事实来源）');
-check(appjs.includes("method: 'PATCH'"), '开关状态应通过 PATCH /api/rooms 落盘');
-check(mainpy.includes("msg.get('auto')"), 'main.py 应把 auto 透传给编排层');
-check(orchpy.includes('def _auto_speak_enabled'), 'orchestrator 应有自动轮流开关判定');
-check(/async def host_message\([\s\S]{0,260}auto=None/.test(orchpy),
-  'host_message 应接收 auto 参数');
-check((cfg.rooms[0].debate || {}).auto_speak === true,
-  '默认房间应显式开启 auto_speak');
-check(html.includes('自动轮流') && !html.includes('先在上面输入一个问题'),
-  '空态提示应改成「发送后参与者依次发言」，不再让人先手动点名');
+check(!html.includes('id="autoSpeak"') && !html.includes('自动轮流'),
+  '「自动轮流」开关应已删除（取消自动 / 手动之分）');
+check(!html.includes('id="gapInput"') && !html.includes('轮内间隔'),
+  '「轮内间隔」应已删除（不再有间隔）');
+check(!html.includes('id="roundsInput"') && !html.includes('id="btnFree"') && !html.includes('自由讨论'),
+  '「自由讨论 + 开始」应已删除');
+check(!html.includes('id="summarizerSelect"') && !html.includes('id="btnSummarize"'),
+  '「总结者 + 指定总结」应已删除');
+check(!html.includes('id="btnStartRound"') && !html.includes('id="btnStop"'),
+  '「启动新一轮 / 停止发言」应已删除');
+check(html.includes('id="btnPause"') && html.includes('id="btnResume"'),
+  '控制条应换成「暂停模型发言 / 继续模型发言」两个按钮');
+check(!html.includes('id="roundHint"'), '右侧真人名单的「本轮 x/y 已发言」提示位应已删除');
+check(appjs.includes('function pauseModels') && appjs.includes('function resumeModels'),
+  'app.js 应有 pauseModels / resumeModels');
+check(/send\(\{ type: 'pause', roomId: S\.roomId \}\)/.test(appjs)
+  && /send\(\{ type: 'resume', roomId: S\.roomId \}\)/.test(appjs),
+  '暂停 / 继续应分别发 pause / resume（不能用旧的 stop）');
+check(!appjs.includes('function autoSpeakOn') && !appjs.includes('function toggleAutoSpeak'),
+  'app.js 不该再留着 autoSpeakOn / toggleAutoSpeak');
+check(!appjs.includes('function setGap') && !appjs.includes('function gapSeconds')
+  && !appjs.includes('function startGapTick'),
+  'app.js 不该再留着间隔相关函数');
+check(!appjs.includes('function freeDiscussion') && !appjs.includes('function summarize')
+  && !appjs.includes('function startRound') && !appjs.includes('function stopAll'),
+  'app.js 不该再留着自由讨论 / 总结 / 启动新一轮 / 停止发言');
+check(!appjs.includes("case 'gap'") && !appjs.includes("case 'gap_end'")
+  && !appjs.includes("case 'round_state'"),
+  'app.js 不该再处理 gap / gap_end / round_state 事件');
+check(appjs.includes("case 'run_state'") && appjs.includes("case 'run_start'")
+  && appjs.includes("case 'run_end'") && appjs.includes("case 'notice'"),
+  'app.js 应处理 run_state / run_start / run_end / notice');
+check(appjs.includes('function updateRunBar') && appjs.includes('function markSpeaking'),
+  'app.js 应有 updateRunBar（控制条那行小字）与 markSpeaking（高亮正在发言的模型卡）');
+check(/send\(\{\s*\n\s*type: 'host_message'[\s\S]{0,300}?uid: S\.uid, nickname: S\.nickname/.test(appjs),
+  '发消息时仍要带 uid / 昵称（服务端靠它记说话人）');
+check(!/type: 'host_message'[\s\S]{0,240}?auto,/.test(appjs),
+  '发消息不该再带 auto 参数（自动轮流已取消）');
+check(!appjs.includes('function renderRound') && !appjs.includes('function updateStartBtn')
+  && !appjs.includes('S.progText'),
+  'app.js 不该再留着轮次进度（renderRound / updateStartBtn / progText）');
+check(!appjs.includes('data-act="reply"') && !appjs.includes('function toggleReplyPicker'),
+  '「让…回应这条」按钮与选择器应已删除（@模型 就能点名接话）');
+check(html.includes('暂停模型发言') && html.includes('继续模型发言'),
+  'index.html 控制条应有这两个按钮的文案');
+check(html.includes('拖动') && html.includes('发言顺序'),
+  '右栏「模型」小标题应提示「房主可拖动卡片调整发言顺序」');
 
-/* ---- A5) 轮内间隔与发言顺序 */
+/* ---- A5) 发言顺序 = 房主拖拽排序；每张模型卡可单独设「首字超时」 ---- */
 
-check(html.includes('id="gapInput"'), 'index.html 控制条应有「间隔（秒）」输入框');
-check(/id="gapInput"[^>]*min="0\.5"/.test(html) && /id="gapInput"[^>]*max="60"/.test(html),
-  '间隔输入框范围应是 0.5~60 秒（下限 2026-10-15 由 3 秒放开到 0.5 秒）');
-check(appjs.includes('function setGap') && appjs.includes('function gapSeconds'),
-  'app.js 应有 setGap / gapSeconds');
-check(appjs.includes("gapInput').addEventListener('change'"),
-  '间隔输入框应绑定 change 事件');
-check(appjs.includes("case 'gap'") && appjs.includes("case 'gap_end'"),
-  'app.js 应处理服务端 gap / gap_end 事件（否则看不到倒计时）');
-check(typeof (cfg.rooms[0].debate || {}).auto_speak_gap_ms === 'number'
-  && cfg.rooms[0].debate.auto_speak_gap_ms >= 500,
-  '默认房间应显式配置 auto_speak_gap_ms 且不低于 500（下限 2026-10-15 由 3000 放开）');
-check(orchpy.includes('MIN_GAP_MS') && orchpy.includes('MAX_GAP_MS'),
-  'orchestrator 应有间隔上下限常量（防止被配成 0 秒）');
-check(/MIN_GAP_MS\s*=\s*500\b/.test(orchpy),
-  'orchestrator.MIN_GAP_MS 应为 500（0.5 秒下限，2026-10-15 放开）');
-check(/def gap_ms\(/.test(orchpy) && orchpy.includes("debate.get('auto_speak_gap_ms')"),
-  'orchestrator 应从房间 debate.auto_speak_gap_ms 读间隔');
-check(orchpy.includes('_gap_pause'), 'orchestrator 应有换人间隔等待逻辑');
-check(orchpy.includes('if idx and gap'), '间隔应只在第 2 位及以后插入（第 1 位不等）');
-check((cfg.rooms[0].debate || {}).auto_speak_order === 'participants_array',
-  '默认房间应标注发言顺序来源为 participants 数组顺序');
+check(!orchpy.includes('round_robin') && !orchpy.includes('def begin_round')
+  && !orchpy.includes('def _auto_speak_enabled') && !orchpy.includes('gap_ms'),
+  '旧的 round_robin 排序 / 轮次 / 自动轮流 / 间隔应已整体删除');
+check(appjs.includes('function moveParticipant') && appjs.includes('function bindDrag'),
+  'app.js 应有拖拽排序（moveParticipant / bindDrag）');
+check(/el\.draggable = true/.test(appjs),
+  '房主看到的模型卡应可拖拽（draggable = true）');
+check(/await patchParticipants\(\(\) => list\)/.test(appjs),
+  '拖拽后要把新顺序写回房间 participants（PATCH 落盘）');
+check(appjs.includes('data-a="timeout"') && appjs.includes('timeout_ms'),
+  '每张模型卡应有「首字超时」输入，并写回该参与者的 timeout_ms');
+check(appjs.includes('class="drag-handle"') && appjs.includes('>${idx + 1}<')
+  || /class="ord"[^>]*>\$\{idx \+ 1\}/.test(appjs),
+  '模型卡应带拖拽手柄与顺序编号（顺序 = 发言顺序）');
+check(orchpy.includes('def first_timeout_ms') && orchpy.includes("(entry or {}).get('timeout_ms')"),
+  'orchestrator 首字超时应优先读这一位参与者的 timeout_ms');
+check(orchpy.includes("(room.get('debate') or {}).get('model_timeout_ms')"),
+  '没有单独设置时退到房间默认 debate.model_timeout_ms');
+check(orchpy.includes('DEFAULT_FIRST_TIMEOUT_MS') && orchpy.includes('MIN_FIRST_TIMEOUT_MS')
+  && orchpy.includes('MAX_FIRST_TIMEOUT_MS'),
+  'orchestrator 应有首字超时的默认值与上下限常量');
+check(orchpy.includes('asyncio.wait_for(it.__anext__(), timeout=timeout_ms / 1000.0)'),
+  '首字超时必须真的 await 超时（等首字超过阈值就跳过这位）');
+check(orchpy.includes('def order(') && orchpy.includes('resolve_room_participants'),
+  '发言顺序应直接取房间参与者数组顺序（无任何排序逻辑）');
+check(orchpy.includes('await self._speak(room_id, ref)'),
+  '队列循环必须 await 串行发言（同一时刻只有一个模型在思考）');
+check(orchpy.includes('if paused and not st[\'jump\']:'),
+  '暂停后（且没人被 @）循环要收工；被 @ 的那位仍允许说一次');
+check(/if outcome == 'abort':\s*\n\s*break\s*\n\s*if paused:\s*\n[\s\S]{0,260}?if not st\['jump'\]:\s*\n\s*break\s*\n\s*continue/.test(orchpy),
+  '第 26 批：暂停中要把被 @ 的几位**依次各说一句**（@ 队列清空才收工，不再只服务第一位）');
 
 /* ---- A6) 首页不该再有「改全局模型库 / 厂商 Key」的入口（2026-10-14 分权） */
 
@@ -334,8 +467,8 @@ check(!appjs.includes("'X-Admin-Token'"),
   '首页不该带管理令牌（普通用户没有令牌，也不该尝试用）');
 check(!appjs.includes("'/api/models'") && !appjs.includes("'/api/providers/'"),
   '首页不该直接调模型库 / 厂商的写接口');
-check(html.includes('只有管理员能在 /admin 里改'),
-  '首页规则模块应写明「只有管理员能在 /admin 里改」');
+check(html.includes('后台的默认规则只有管理员能在 /admin 改'),
+  '首页规则模块应写明「后台的默认规则只有管理员能在 /admin 改」');
 check(html.includes('模型库和厂商 / API Key 只能由管理员在'),
   '首页应说明模型库与厂商 Key 只能在 /admin 维护');
 check(html.includes('昵称就是你的账号'),
@@ -387,8 +520,8 @@ check(mainpy.includes('async def _do_join') && mainpy.includes('def _is_local'),
   'main.py 应实现 _do_join 与 _is_local（老房间允许本机用户认领房主）');
 check(mainpy.includes("'X-Owner-Keys'") && mainpy.includes('def _is_owner_of'),
   'main.py 应通过 X-Owner-Keys 头判定管理权');
-check(mainpy.includes('WS_OWNER_ONLY') && /WS_OWNER_ONLY\s*=\s*\{[^}]*'free'[^}]*'clear'/.test(mainpy),
-  '自由讨论 / 清空历史应划归房主（会成倍烧额度或毁记录）');
+check(/WS_OWNER_ONLY\s*=\s*\{\s*'clear'\s*\}/.test(mainpy),
+  'WS 房主专属动作只剩「清空历史」（自由讨论已删除）');
 check(mainpy.includes('async def api_kick_member') && mainpy.includes("'kicked'"),
   'main.py 应有房主踢人的接口并给被踢者发 kicked 事件');
 check(mainpy.includes('async def api_room_code'),
@@ -401,13 +534,27 @@ check(/if rid and sess\.get\('roomId'\) != rid:/.test(mainpy),
 check(/async def _drop_session[\s\S]{0,600}unregister_member/.test(mainpy),
   '掉线 / 离开要从本轮要求名单里摘掉（否则整轮永远等不到「全员说完」）');
 check(orchpy.includes('def register_member') && orchpy.includes('def unregister_member'),
-  'orchestrator 应有 register_member / unregister_member');
-check(orchpy.includes('def round_state') && orchpy.includes('def _open_phase') && orchpy.includes('def _phase_complete'),
-  'orchestrator 应有轮次状态机（round_state / _open_phase / _phase_complete）');
-check(orchpy.includes('def begin_round') && orchpy.includes('def start_round'),
-  'orchestrator 应有 begin_round / start_round（手动启动新一轮）');
-check(orchpy.includes('本房间有') && orchpy.includes('位真实用户参与讨论'),
-  'system 提示词应动态注入本房间的真人名单');
+  'orchestrator 保留 register_member / unregister_member 占位（main.py 还在调，改成空实现）');
+check(orchpy.includes('def run_state') && orchpy.includes('def ensure_running')
+  && orchpy.includes('async def _loop'),
+  'orchestrator 应有队列循环（run_state / ensure_running / _loop）');
+check(!orchpy.includes('def begin_round') && !orchpy.includes('def start_round')
+  && !orchpy.includes('def free_discussion') && !orchpy.includes('def summarize')
+  && !orchpy.includes('def point_speaker') && !orchpy.includes('def _open_phase'),
+  '旧的轮次 / 自由讨论 / 总结 / point_speaker 应已整体删除');
+check(orchpy.includes('def pause(') && orchpy.includes('def resume(')
+  && orchpy.includes('def point_model('),
+  'orchestrator 应有 pause / resume / point_model');
+check(orchpy.includes('if len(parts) == 1:') && orchpy.includes('单模型'),
+  '单模型房间应「说完即停」（一人一句，不自己循环）');
+check(orchpy.includes("st['jump']") && orchpy.includes('插到「下一个开口位」'),
+  '@模型 应插队到下一个开口位（不打断正在说的那一位）');
+check(orchpy.includes("from .prompt_text import humans_prompt") && orchpy.includes('humans_prompt('),
+  'system 提示词的真人名单应走 humans_prompt（第 25 批拆成可单测的纯函数）');
+check(orchpy.includes('self._online_uids(room_id)') && /online_provider=None/.test(orchpy),
+  'orchestrator 应接收「谁在线」，把真人分成在线 / 不在线两组');
+check(mainpy.includes('online_provider=_online_uids'),
+  'main.py 应把「谁在线」传给编排器（在线 = 有 WS 连接挂在这个房间）');
 check(!orchpy.includes('主持人要求你'),
   '不该再写死「主持人要求你」——真人是谁由当前房间成员决定');
 check(appjs.includes('function ensureIdentity') && appjs.includes("LS.get('uid'"),
@@ -423,10 +570,11 @@ check(appjs.includes('function applyPermissions') && appjs.includes("$$('.owner-
   'app.js 应有一处统一的权限开关（owner-only）');
 check(appjs.includes('function kickMember') && appjs.includes('function renderMemberAdmin'),
   'app.js 应有踢人 / 成员管理面板');
-check(appjs.includes('function updateStartBtn') && appjs.includes("'打断并重启'"),
-  '「启动新一轮」按钮在跑动中应变成「打断并重启」');
-check(appjs.includes('function renderPeople') && appjs.includes('function renderRound'),
-  'app.js 应有真人名单与轮次进度渲染');
+check(appjs.includes('function updatePauseBtns') && appjs.includes("$('#btnPause')")
+  && appjs.includes("$('#btnResume')"),
+  '「暂停 / 继续模型发言」两个按钮要按 paused 状态切换显示');
+check(appjs.includes('function renderPeople') && appjs.includes('function updateRunBar'),
+  'app.js 应有真人名单与运行信息渲染');
 check(html.includes('id="joinGate"') && html.includes('id="gateNick"') && html.includes('id="btnGateOk"'),
   'index.html 应有填昵称的门槛');
 check(html.includes('id="dlgJoin"') && html.includes('id="joinCode"') && html.includes('id="btnJoinOk"'),
@@ -437,8 +585,9 @@ check(html.includes('id="peopleList"') && html.indexOf('id="peopleList"') < html
 check(html.includes('id="btnMembers"') && html.includes('class="mini owner-only"')
   && html.includes('id="dlgMembers"') && html.includes('id="memberAdminList"'),
   '成员管理面板应存在且按钮标了 owner-only');
-check(html.includes('id="btnStartRound"') && !/id="btnStartRound"[^>]*owner-only/.test(html),
-  '「启动新一轮」必须所有人都能用（不是房主专属）');
+check(html.includes('id="btnPause"') && !/id="btnPause"[^>]*owner-only/.test(html)
+  && html.includes('id="btnResume"') && !/id="btnResume"[^>]*owner-only/.test(html),
+  '「暂停 / 继续模型发言」必须所有人都能用（不是房主专属）');
 check(html.includes('id="roomCode"') && html.includes('id="mePill"'),
   '顶栏应有房间号与「我是谁」提示');
 check(appjs.includes("owner && !ownerless ? ' · 房主' : ''"),
@@ -463,14 +612,15 @@ SA.members = [
   { uid: 'u-2', nickname: '小李', online: true },
   { uid: 'u-3', nickname: '小张', online: false },
 ];
-SA.round = { required: ['u-me', 'u-2'], spoken: ['u-me'], point_at: null };
+SA.messages = [];
+SA.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
 A.sandbox.renderPeople();
 const people = A.byId.peopleList.children;
 check(people.length === 3, `真人名单应渲染 3 行，实际 ${people.length}`);
 check(people[0]._html.includes('（我）') && people[0]._html.includes('badge-owner'),
   '自己的那一行应标「（我）」+ 房主徽标');
-check(people[0]._html.includes('✓ 已发言'), '说过话的人应点亮「✓ 已发言」');
-check(people[1]._html.includes('待发言'), '本轮还没说的人应显示「待发言」');
+check(!people[0]._html.includes('✓ 已发言') && !people[1]._html.includes('待发言'),
+  '第 24 批起真人名单不再有「已发言 / 待发言」轮次勾（轮次机制已取消）');
 check(people[2].className.includes('off'), '离线成员应带 off 标记');
 check(!people[0]._html.includes('data-a="kick"'), '自己那一行不该有「移出」按钮');
 check(people[1]._html.includes('data-a="kick"'), '房主应能移出其他成员');
@@ -481,19 +631,22 @@ check(guestPeople.every((c) => !c._html.includes('data-a="kick"')),
   '非房主不该看到任何「移出」按钮');
 SA.isOwner = true;
 
-A.sandbox.renderRound();
-check(SA.progText.includes('1/2'), `真人阶段进度应显示 1/2，实际「${SA.progText}」`);
-check(A.byId.runInfo._html.includes('启动新一轮'), '没说完时应提示可以点「启动新一轮」');
-SA.round = { required: ['u-me', 'u-2'], spoken: ['u-me', 'u-2'], point_at: null };
-A.sandbox.renderRound();
-check(SA.progText.includes('模型开始回应'), '全员点亮后应提示模型开始回应');
-
+// 运行状态：暂停 / 继续按钮按 paused 切换；正在发言的模型卡要高亮
 A.sandbox.updateStatusPill();
-check(A.byId.btnStartRound.textContent === '启动新一轮', '空闲时按钮应是「启动新一轮」');
-SA.status = { running: true, total_calls: 1, current: { modelName: 'X' } };
-A.sandbox.updateStartBtn();
-check(A.byId.btnStartRound.textContent === '打断并重启', '跑动中按钮应变成「打断并重启」');
-SA.status = { running: false, total_calls: 1 };
+check(A.byId.btnPause.hidden === false && A.byId.btnResume.hidden === true,
+  '没暂停时应显示「暂停模型发言」、藏起「继续模型发言」');
+SA.run = { running: true, paused: true, current: null, cursor: 1, order: [] };
+A.sandbox.updateStatusPill();
+check(A.byId.btnPause.hidden === true && A.byId.btnResume.hidden === false,
+  '暂停后应藏起「暂停」、露出「继续」');
+check(A.byId.statusPill.textContent.includes('已暂停'),
+  `暂停时状态药丸应显示「已暂停」，实际「${A.byId.statusPill.textContent}」`);
+SA.run = { running: true, paused: false, current: { modelRef: 'm-x', modelName: '智谱 GLM' }, cursor: 0, order: [] };
+A.sandbox.updateRunBar();
+check(A.byId.runInfo._html.includes('正在发言') && A.byId.runInfo._html.includes('智谱 GLM'),
+  '运行条应显示正在发言的模型名');
+SA.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
+A.sandbox.updateRunBar();
 
 // 权限：房主有「· 房主」与房间号，成员两者都没有
 //    注意：默认讨论室 2026-10-14 起是公开房间（没有房间号），所以这里换成私有房间做样本
@@ -527,6 +680,82 @@ check(roomEls[0]._html.includes('data-a="del"') && roomEls[0]._html.includes('�
 check(!roomEls[1]._html.includes('data-a="del"') && !roomEls[1]._html.includes('房主'),
   '别人的房间不该出现管理按钮');
 check(roomEls[1]._html.includes('1 位成员'), '别人的房间应显示成员数（看得见有多少人在里面）');
+
+/* ---- A19) 房间规则 / 角色「随时可改」，入口在左栏（2026-10-15 用户两轮反馈）----
+   第 18 批把入口放在房间卡上 → 用户反馈「卡片太拥挤；左栏下面本来就有规则和角色，
+   直接在那里查看和修改就行」→ 撤掉房间卡按钮，把「修改」放进左栏两个区块的标题栏。 */
+check(!appjs.includes('data-a="scope"'),
+  '房间卡上不该再有「规则/角色」按钮（用户反馈：卡片太拥挤）');
+check(html.includes('id="btnEditRules"') && html.includes('id="btnEditRoles"'),
+  '左栏「规则」「角色」两个区块的标题栏应有「修改」按钮');
+check(/const canEditHere = owner && !ownerless;[\s\S]{0,300}?btnEditRules/.test(appjs),
+  '左栏「修改」按钮应与控制条按钮同一套权限（房主 且 非无主房间）');
+check(appjs.includes('const room = (roomArg && roomArg.id) ? roomArg'),
+  'openScopeDialog 应支持指定房间（不再一律改「当前所在房间」）');
+check(/S\.scope = \{[\s\S]{0,200}?roomId: room\.id/.test(appjs),
+  'S.scope 应记下目标房间 id，保存时按它提交');
+check(/async function saveScope[\s\S]{0,200}?encodeURIComponent\(rid\)/.test(appjs),
+  'saveScope 应 PATCH 目标房间（rid = S.scope.roomId），而不是「当前所在房间」');
+check(appjs.includes("$('#btnRoomScopeBar')"), '房间内控制条应有「规则 / 角色」按钮');
+check(appjs.includes('() => openScopeDialog('), '按钮绑定要包一层，别把 MouseEvent 当房间传进去');
+
+// 真机行为：控制条 + 左栏「修改」按钮 —— 房主可见，无主房间全不给
+Object.keys(MK).forEach((k) => { delete MK[k]; });
+MK['room-locked'] = 'k1';
+SA.rooms = [{ id: 'room-locked', name: '私有房间', open: false }];
+SA.roomId = 'room-locked';
+SA.room = { id: 'room-locked', name: '私有房间', open: false };
+SA.isOwner = true;
+SA.ownerless = false;
+A.sandbox.applyPermissions();
+check(A.byId.btnRoomScopeBar.hidden === false, '房主在房间里应看到控制条上的「规则 / 角色」按钮');
+check(A.byId.btnEditRules.hidden === false && A.byId.btnEditRoles.hidden === false,
+  '房主在房间里应看到左栏「规则」「角色」的「修改」按钮');
+SA.ownerless = true;
+A.sandbox.applyPermissions();
+check(A.byId.btnRoomScopeBar.hidden === true && A.byId.btnEditRules.hidden === true
+  && A.byId.btnEditRoles.hidden === true,
+  '无主房间（默认讨论室）不该出现任何「修改规则 / 角色」入口（只能跟随后台默认）');
+SA.ownerless = false;
+delete MK['room-locked'];
+SA.room = cfg.rooms[0];
+
+/* ---- A20) 规则 / 角色的「修改」各管各的（2026-10-15 用户要求）----
+   用户原话：「红框的地方，规则和角色分开，规则的修改按钮只修改规则」
+   → 左栏两个「修改」按来源只显示 / 只提交自己那一块；控制条与房间设置入口仍是两个一起改。 */
+check(html.includes('id="scopeSecRules"') && html.includes('id="scopeSecRoles"'),
+  '弹窗里两段应有各自 id（scopeSecRules / scopeSecRoles），便于按来源隐藏');
+check(css.includes('.scope-sec[hidden] { display: none; }'),
+  'style.css 必须显式补 .scope-sec[hidden]{display:none}（.scope-sec 的 display:flex 会压过 hidden 的默认值 —— 用户实测只改其一时另一段照常显示）');
+check(appjs.includes("openScopeDialog(findRoom(S.roomId), 'rules')")
+  && appjs.includes("openScopeDialog(findRoom(S.roomId), 'roles')"),
+  '左栏两个「修改」应分别以 rules / roles 模式打开');
+check(/if \(sc\.mode === 'rules'\) \{[\s\S]{0,200}?return \{ rules:/.test(appjs)
+  && /if \(sc\.mode === 'roles'\) \{[\s\S]{0,120}?return \{ roles: sc\.roles \};/.test(appjs),
+  '提交体应按 mode 只带自己那一块（PATCH 缺键=不动，互不干扰）');
+
+// 真机行为：只改规则 / 只改角色时，另一段隐藏、提交体只带自己的键
+SA.scope = { roomId: 'room-locked', mode: 'rules', custom: false, preamble: '', items: [], roles: [], dirty: false };
+A.sandbox.renderScope();
+check(A.byId.scopeSecRules.hidden === false && A.byId.scopeSecRoles.hidden === true,
+  '只改规则：弹窗里的角色段整个隐藏');
+check(A.byId.scopeTitle.textContent.indexOf('本房间规则') === 0,
+  `只改规则：标题应是「本房间规则…」，实际「${A.byId.scopeTitle.textContent}」`);
+const bodyRules = A.sandbox.collectScope();
+check(('rules' in bodyRules) && !('roles' in bodyRules), '只改规则：提交体只带 rules 键');
+SA.scope.mode = 'roles';
+A.sandbox.renderScope();
+check(A.byId.scopeSecRoles.hidden === false && A.byId.scopeSecRules.hidden === true,
+  '只改角色：弹窗里的规则段整个隐藏');
+check(A.byId.scopeTitle.textContent.indexOf('本房间角色') === 0,
+  `只改角色：标题应是「本房间角色…」，实际「${A.byId.scopeTitle.textContent}」`);
+const bodyRoles = A.sandbox.collectScope();
+check(('roles' in bodyRoles) && !('rules' in bodyRoles), '只改角色：提交体只带 roles 键');
+SA.scope.mode = 'both';
+A.sandbox.renderScope();
+check(A.byId.scopeSecRules.hidden === false && A.byId.scopeSecRoles.hidden === false,
+  '一起改（控制条 / 房间设置入口）：两段都显示');
+SA.scope = null;
 
 // 消息流：真人消息带昵称，自己的 / 房主的有区分
 SA.messages = [];
@@ -579,8 +808,8 @@ check(appjs.includes("$('#rNewNote').hidden = true"),
   '改成「房间设置」时不该再显示那句新建提示');
 check(appjs.includes('这个房间还没有模型参与者') && appjs.includes('房主还没往这个房间添加模型'),
   '参与者面板应有空态提示（房主与成员两种文案）');
-check(appjs.includes('这个房间还没有模型参与者，先在右侧「添加模型」'),
-  '「指定总结」在空房间里应被拦下并提示去添加模型');
+check(!appjs.includes('指定总结'),
+  '「指定总结」入口应已删除（第 24 批：不再有总结环节）');
 check(appjs.includes("'房间设置'") && !appjs.includes("='重命名房间'") && !appjs.includes("= '重命名房间'"),
   '房间对话框标题应改成「房间设置」（现在也能改公开 / 私有）');
 check(appjs.includes('function updateRoomOpenNote') && /id="rOpenNote"|#rOpenNote/.test(appjs),
@@ -676,17 +905,22 @@ check(A.byId.participantList._html.includes('房主还没往这个房间添加�
   '成员看到的空房间提示应说明是房主还没加模型');
 SA.isOwner = true;
 
-// 空房间里「指定总结」不能把一个空 modelRef 发出去
+// 暂停 / 继续：发出去的就是 pause / resume（第 24 批替换掉「停止发言」）
 let sendCount = 0;
+let lastSent = null;
 const realSend = A.sandbox.send;
-A.sandbox.send = () => { sendCount += 1; };
-A.sandbox.summarize();
-check(sendCount === 0, '空房间里点「指定总结」不该发出空 modelRef');
-const anyModelId = (cfg.models || [])[0] && cfg.models[0].id;
-SA.room = { id: 'room-1', open: false, participants: [{ model_ref: anyModelId, enabled: true }] };
-A.byId.summarizerSelect.value = anyModelId;
-A.sandbox.summarize();
-check(sendCount === 1, '有参与者的房间点「指定总结」应正常发出');
+A.sandbox.send = (o) => { sendCount += 1; lastSent = o; };
+SA.roomId = 'room-1';
+A.sandbox.pauseModels();
+check(sendCount === 1 && lastSent && lastSent.type === 'pause',
+  '「暂停模型发言」应发出 type: pause');
+A.sandbox.resumeModels();
+check(sendCount === 2 && lastSent && lastSent.type === 'resume',
+  '「继续模型发言」应发出 type: resume');
+sendCount = 0;
+SA.roomId = null;
+A.sandbox.pauseModels();
+check(sendCount === 0, '没进房间时点「暂停」不该发出去');
 A.sandbox.send = realSend;
 SA.room = cfg.rooms[0];
 SA.roomId = cfg.rooms[0].id;
@@ -956,11 +1190,18 @@ check(B.byId.userAdminList._html.includes('还没有人注册昵称'),
 
 /* ---- B4) 规则 / 口令区 */
 
-check(B.byId.rulesEdit.value === (cfg.shared_prompt || ''),
-  '规则编辑框应灌入 config.json 的 shared_prompt 原文');
+const adminRules = (cfg.rules || {}).items || [];
+check(B.byId.rulesPreamble.value === ((cfg.rules || {}).preamble || ''),
+  '默认规则「前言」应灌入 config.json 的 rules.preamble');
+const rulesEditHtml = B.byId.rulesEdit._html;
+check((rulesEditHtml.match(/data-a="rm"/g) || []).length === adminRules.length,
+  `默认规则每条都该有一个删除按钮，应为 ${adminRules.length} 个`);
+adminRules.forEach((r, i) => {
+  check(rulesEditHtml.includes(r.text), `默认规则第 ${i + 1} 条原文应出现在编辑卡里`);
+});
 B.sandbox.markRulesDirty();
 check(B.byId.rulesDirty.textContent === '已保存', '没改动时应显示「已保存」');
-B.byId.rulesEdit.value = '改了一点点';
+SB.rulesDraft = { preamble: '', items: [{ id: 'rule-x', text: '改了一点点' }] };
 B.sandbox.markRulesDirty();
 check(B.byId.rulesDirty.textContent === '有未保存的修改', '改动后应提示「有未保存的修改」');
 check(B.byId.pwNote._html.includes('口令'), '管理口令区应有说明文案');
@@ -1274,8 +1515,8 @@ check(cfgStore.includes('def verify_admin_password') && cfgStore.includes('hmac.
   '口令比对应用常量时间比较（hmac.compare_digest）');
 check(cfgStore.includes('def admin_token') && cfgStore.includes('def set_admin_password'),
   'config_store 应有 admin_token / set_admin_password');
-check(cfgStore.includes('def set_shared_prompt') && cfgStore.includes('def set_role_presets'),
-  'config_store 应有 set_shared_prompt / set_role_presets');
+check(cfgStore.includes('def set_default_rules') && cfgStore.includes('def set_role_presets'),
+  'config_store 应有 set_default_rules / set_role_presets（admin 只管默认那份）');
 check(cfgStore.includes('_slug(name') || cfgStore.includes("_slug(name, 'role')"),
   '角色库 id 缺省时按名字生成（可读、稳定）');
 
@@ -1286,6 +1527,275 @@ check(/\.card-sub\.one\s*\{[^}]*text-overflow:\s*ellipsis/.test(css), 'card-sub.
 check(/\.card-sub\.two\s*\{[^}]*-webkit-line-clamp:\s*2/.test(css), 'card-sub.two 应两行截断');
 check(/\.card-sub\.two\s*\{[^}]*min-height/.test(css), 'card-sub.two 应有 min-height 保证一行角色也占两行高');
 check(/\.tag-warn\s*\{/.test(css), '应有 tag-warn 角标样式');
+
+/* ---- A21) 模型默认设置：思考 off（关不掉才 low）+ max_tokens 1000（2026-10-16 用户要求）----
+   用户原话：「模型的设置默认都改成低档位，关闭思考，max_tokens 1000。不要每次更新的时候覆盖我的配置」 */
+
+check(adminHtml.includes('id="mMaxTokens" type="number" min="64" max="32000" value="1000"'),
+  '后台新增模型表单的 max_tokens 默认值应是 1000');
+check(adminHtml.includes('value="off" selected'),
+  '后台思考档位的默认选中项应是 off（关闭思考）');
+check((adminjs.match(/\|\| 1000/g) || []).length >= 2,
+  'admin.js 里 max_tokens 的兜底值也应是 1000（打开表单 / 提交表单两处）');
+
+const realModels = (cfg.models || []).filter((m) => m.provider !== 'mock');
+check(realModels.length >= 6, `本地模型库应有若干真实模型（实际 ${realModels.length}）`);
+const badTok = realModels.filter((m) => m.max_tokens !== 1000).map((m) => `${m.id}=${m.max_tokens}`);
+check(badTok.length === 0, `本地模型库每个模型 max_tokens 都应是 1000（不符：${badTok.join(', ') || '无'}）`);
+const badLvl = realModels.filter((m) => m.thinking_level !== 'off' && m.thinking_level !== 'low')
+  .map((m) => `${m.id}=${m.thinking_level || '(空)'}`);
+check(badLvl.length === 0, `本地模型库档位只能是 off / low（不符：${badLvl.join(', ') || '无'}）`);
+check(realModels.filter((m) => m.thinking_level === 'off').length >= 6,
+  '能关思考的模型应设为 off（关不掉的那几个才退到 low）');
+const glm53 = realModels.find((m) => (m.model || '').indexOf('glm-5.3') === 0);
+check(!!glm53 && glm53.thinking_level === 'low',
+  `关不掉思考的 glm-5.3 应退到 low（实际 ${glm53 ? glm53.thinking_level : '没找到'}）`);
+check(!/max_tokens\s*[:=]\s*\|\|\s*1200/.test(adminjs) && !adminHtml.includes('value="1200"'),
+  '老的 1200 默认值应清干净');
+
+/* ---- A22) 点名护栏搬到 point_model；停用 / 非参与者的 @ 仍要被拦（第 24 批改写）----
+   用户原话（第 22 批）：「混元模型未启动，但是手动点发言还是会生效。」
+   第 24 批把模型卡上的「发言」按钮删了，点名只剩 @模型 一条路，护栏整体搬进 point_model()：
+   必须先在**本房间参与者名单**里找到这个人，且他得是启用状态。 */
+
+check(/def point_model[\s\S]{0,1800}?entry = next\(\(p for p in \(self\.store\.room\(room_id\)\.get\('participants'\)/.test(orchpy),
+  'point_model 必须先在**本房间参与者名单**里找这个人（不能只查模型库）');
+check(orchpy.includes('不是本房间的参与者'),
+  '点名非参与者要明确拒绝（否则用户看到的就是「点了没反应」）');
+check(/def point_model[\s\S]{0,2200}?if not entry\.get\('enabled', True\):/.test(orchpy),
+  'point_model 要拦停用的参与者（用户报的正是这个漏）');
+check(orchpy.includes('在这个房间里是停用状态'),
+  '拦下停用者的报错要说清原因（不是一句「失败」）');
+check(/elif kind == 'point':[\s\S]{0,800}?await _ws_error\(ws, _p_res\.get\('error'\)/.test(mainpy),
+  'main.py 点名分支必须把护栏的拒绝原因弹回聊天室（原来丢掉了返回值 = 点了没反应）');
+
+check(!appjs.includes('data-a="speak"'),
+  '模型卡上的「发言」按钮已按第 24 批删除（点名改由 @模型 完成）');
+check(/const off = p\.enabled === false \|\| !m \|\| m\.enabled === false;[\s\S]{0,160}?el\.className/.test(appjs),
+  '（回归）app.js 必须先算 const off 再用它 —— const 有 TDZ，写在 el.className 之后会直接 ReferenceError');
+check(appjs.includes('const off = p.enabled === false || !m || m.enabled === false;')
+  && /el\.className = 'card' \+ \(off \? ' off' : ''\)/.test(appjs),
+  '整张卡按 off 变灰（判据不变）');
+
+// 真机行为：停用的那位卡片变灰；房主看到拖拽手柄 + 顺序号 + 超时输入；成员看不到这些
+SA.isOwner = true;
+const pgOn = (realModels[0] || {}).id;
+const pgOff = (realModels[1] || {}).id;
+SA.room = { id: 'room-pg', name: '点名护栏房', open: false, participants: [
+  { model_ref: pgOn, enabled: true },
+  { model_ref: pgOff, enabled: false }] };
+A.sandbox.renderParticipants();
+const pgCards = A.byId.participantList.children;
+check(pgCards.length === 2, `点名护栏房应渲染 2 张参与者卡，实际 ${pgCards.length}`);
+check(pgCards[1].className.includes('off') && !pgCards[0].className.includes('off'),
+  '停用的参与者整张卡变灰（off），启用的不变灰');
+check(pgCards[0]._html.includes('drag-handle') && pgCards[0]._html.includes('data-a="timeout"')
+  && pgCards[0]._html.includes('首字超时'),
+  '房主看到的模型卡应有拖拽手柄与「首字超时」输入');
+check(/>1</.test(pgCards[0]._html) && />2</.test(pgCards[1]._html),
+  '模型卡应显示发言顺序编号（第 1 位 / 第 2 位）');
+SA.isOwner = false;
+A.sandbox.renderParticipants();
+check(A.byId.participantList.children.every((c) => !c._html.includes('drag-handle')
+  && !c._html.includes('data-a="timeout"')),
+  '非房主看不到拖拽手柄与超时输入（改房间配置只有房主有权限）');
+SA.room = cfg.rooms[0];
+SA.roomId = cfg.rooms[0].id;
+SA.isOwner = false;
+
+/* ---- A23) 输入框 @ 补全：在线真人 + 已启用模型（2026-10-16 用户要求）----
+   用户原话：「用户在输入框可以直接 @ 房间中的所有在线参与者，包括在线真人和启动的模型。」
+   口径（用户拍定）：候选 = 在线他人 + 已启用模型；@真人 = 仅高亮提醒 + 右侧「被点名」，不参与调度。
+   🔴 最容易埋的雷：把真人 uid 塞进 point_at → 服务端 _speak() 当模型 resolve 不到 →
+      报「模型 xxx 不在模型库里，已跳过」，白白跳掉第一位并把整轮搅坏。前端 + 服务端各拦一道。 */
+
+check(/function atCandidates\(\)/.test(appjs), 'app.js 应有 atCandidates()（@ 候选池）');
+check(/if \(!p\.online \|\| !p\.uid \|\| p\.uid === S\.uid\) return;/.test(appjs),
+  '候选要排除离线真人和自己（用户定：在线他人）');
+check(/roomParticipants\(\)\.forEach\(\(p\) => \{[\s\S]{0,120}?kind: 'model'/.test(appjs),
+  '模型候选只能来自 roomParticipants()（= 本房间已启用的模型，停用的不进）');
+check(/Object\.assign\(\{\}, byId\[p\.model_ref\], \{[\s\S]{0,700}?model_ref: p\.model_ref,/.test(appjs),
+  'roomParticipants() 必须显式带上 model_ref（模型库条目只有 id，漏了三个消费方全拿到 undefined）');
+check(appjs.includes('const pointList = men.models;')
+  && appjs.includes('pointAtList: pointList,'),
+  '第 26 批：@ 到的**全部**模型按出现先后放进 pointAtList（第 25 批前只传第一位，@ 两位只有第一位开口）');
+check(appjs.includes('pointAt: pointList[0] || null,'),
+  'pointAt 仍取第一位（老服务端兼容），且只能取**模型** —— 真人绝不进 point_at');
+check(appjs.indexOf('text.match(/@([^') === -1,
+  '旧的「@ 模糊匹配第一个 token」逻辑应已删除（它不区分真人 / 模型，正是搅坏整轮的源头）');
+check(/function parseMentions\(/.test(appjs) && /return \{ users, models, names \};/.test(appjs),
+  'parseMentions 要把真人和模型分成两路返回');
+check(/function highlightMentions\(/.test(appjs) && appjs.includes('class="at-tag"'),
+  '正文里的 @某某 要高亮成标签');
+check(/const reEsc = \(s\) => String\(s\)\.replace\(/.test(appjs),
+  '名字拼进正则前要转义（名字带 . + 之类的元字符才不会乱匹配）');
+check(/if \(e\.key === 'ArrowDown'\) \{ e\.preventDefault\(\); moveAt\(1\); return; \}/.test(appjs)
+  && /if \(e\.key === 'Escape'\) \{ e\.preventDefault\(\); closeAtMenu\(\); return; \}/.test(appjs),
+  '浮层开着时 ↑↓ / Esc 要归浮层（方向键别去跑光标、Esc 要能关掉）');
+check(appjs.includes("atBox.addEventListener('mousedown'"),
+  '候选用 mousedown 选中 —— 用 click 的话 textarea 会先 blur、浮层先被关掉，就点不着了');
+check(/at: null,/.test(appjs) && appjs.includes('S.at = null;'),
+  '@ 补全状态要在 S 里有位置，关浮层时要清掉（否则 setInterval / 重渲染会读到脏状态）');
+check(html.includes('id="atMenu"'), 'index.html 要有 atMenu 浮层容器');
+check(/\.at-menu\s*\{[\s\S]{0,500}?top: calc\(100% \+ 6px\)/.test(css),
+  '浮层要贴在输入框下方（top）—— 输入框在聊天列顶部，向上弹会被 .col-center overflow:hidden 裁掉');
+check(!/\.at-menu\s*\{[\s\S]{0,500}?bottom: calc\(100%/.test(css),
+  '浮层禁止再改回向上弹（bottom）—— 第 23 批用户实测被裁掉过');
+check(/\.at-menu\[hidden\]\s*\{\s*display: none;/.test(css),
+  '浮层隐藏必须靠这条 CSS —— .at-menu 自己带 display，没有它 hidden 压不住');
+check(/\.at-tag\s*\{/.test(css) && /\.at-flag\s*\{/.test(css) && /\.at-kind\.user\s*\{/.test(css),
+  '@高亮标签 / 被点名标记 / 真人圆点 都要有样式');
+
+check(orchpy.includes('auto=None, mentions: dict | None = None,') && orchpy.includes('point_at_list: list[str] | None = None'),
+  'host_message 要接受 mentions + point_at_list（第 26 批：@ 全部模型）');
+check(/ok_models = self\.order\(room_id\)/.test(orchpy),
+  'host_message 要拿本房间**已启用**的模型顺序（order() = 房主排好的 participants 顺序）');
+check(/if point_at and point_at not in ok_models:\s*\n\s*point_at = None/.test(orchpy),
+  '服务端也要拦 point_at 不是本房间启用模型的情况（真人 uid 进来会白跳一位）');
+check(/for ref in \(\[point_at\] \+ list\(point_at_list or \[\]\)\):[\s\S]{0,200}?await self\.point_model\(room_id, ref, quiet=True\)/.test(orchpy),
+  '第 26 批：@ 到的每位模型都要 point_model 插队（按出现先后、去重；真人 uid / 非参与者被 ok_models 过滤）');
+check(/self\.rooms\.append\(room_id, msg\)[\s\S]{0,300}?for ref in pointed:/,
+  '插队必须发生在消息上屏**之后**（模型开口前重读历史，先插队就看不到刚发的这条）');
+check(orchpy.includes("'mentions': men,"), 'mentions 要随消息一起入库 / 广播（右侧标记 + 导出都靠它）');
+check(mainpy.includes("auto=msg.get('auto'), mentions=msg.get('mentions')")
+  && mainpy.includes("point_at_list=msg.get('pointAtList') or None"),
+  'main.py 要把前端的 mentions / pointAtList 透传给 host_message');
+
+// 真机行为：候选池过滤（假 DOM 里真跑）
+const atModelOn = (realModels[0] || {}).id;
+const atModelOff = (realModels[1] || {}).id;
+SA.config = cfg;
+SA.uid = 'u-me';
+SA.members = [
+  { uid: 'u-me', nickname: '我', online: true },
+  { uid: 'u-a', nickname: '小李', online: true },
+  { uid: 'u-b', nickname: '老王', online: true },
+  { uid: 'u-c', nickname: '离线的小张', online: false },
+];
+SA.room = { id: 'room-at', name: 'at房', open: true, participants: [
+  { model_ref: atModelOn, enabled: true },
+  { model_ref: atModelOff, enabled: false }] };
+SA.roomId = 'room-at';
+
+const atC = A.sandbox.atCandidates();
+check(atC.length === 3, `候选应是 2 位在线他人 + 1 个启用模型 = 3 项，实际 ${atC.length}`);
+check(atC[0].kind === 'user' && atC[1].kind === 'user' && atC[2].kind === 'model',
+  '候选顺序：在线真人在前、已启用模型在后（浮层分组的依据）');
+check(!atC.some((c) => c.id === 'u-me'), '候选里不能有自己的 uid');
+check(!atC.some((c) => c.id === 'u-c'), '候选里不能有离线的真人');
+check(!atC.some((c) => c.id === atModelOff), '候选里不能有被停用的模型');
+check(atC[2].id === atModelOn && !!atC[2].id,
+  '模型候选要带得住 model_ref（不能是 undefined）');
+
+/* 🔴 回归（2026-10-16 顺手挖出来的既有 bug）：roomParticipants() 返回的是**模型库条目**合并体，
+   而库条目里只有 `id`、没有 `model_ref`。漏带 model_ref 会让三处消费方一起拿到 undefined：
+   ① 控制条「总结者」下拉的 <option value> 变空串（选谁都是服务端默认那位）；
+   ② 消息上「让…回应这条」发出的 modelRef 是空 → 服务端点名直接拒（这条一直坏的）；
+   ③ @ 补全候选拿不到模型 id。 */
+check(A.sandbox.roomParticipants().every((p) => !!p.model_ref),
+  'roomParticipants() 的每一项都必须带 model_ref（@ 候选 / 渲染都靠它）');
+A.sandbox.renderParticipants();
+check(A.byId.participantList.children.length === 2
+  && A.byId.participantList.children[0].dataset.ref === atModelOn,
+  '模型卡要带 data-ref（markSpeaking 靠它定位正在发言的那一位）');
+
+const atModelName = atC[2].name;
+const men1 = A.sandbox.parseMentions('看下 @小李 和 @' + atModelName + ' 的说法');
+check(men1.users.length === 1 && men1.users[0] === 'u-a', '@真人要进 users');
+check(men1.models.length === 1 && men1.models[0] === atModelOn, '@模型要进 models');
+check(!men1.models.includes('u-a') && !men1.users.includes(atModelOn),
+  '🔴 真人和模型绝不能串台（userId 混进 point_at 会被服务端当模型 resolve）');
+const men2 = A.sandbox.parseMentions('@查无此人 你好');
+check(men2.users.length === 0 && men2.models.length === 0,
+  '@ 一个不在房间里的名字不应产生任何 mentions');
+
+const hl = A.sandbox.highlightMentions('@小李 你看 @' + atModelName + ' 那边');
+check(hl.includes('<span class="at-tag">@小李</span>'), '正文里的 @真人 应渲染成高亮标签');
+check(hl.includes('<span class="at-tag">@' + atModelName + '</span>'), '正文里的 @模型 也应高亮');
+const hlBad = A.sandbox.highlightMentions('<script>alert(1)</script> @小李');
+check(!hlBad.includes('<script>'), '@ 高亮不能破坏原有的 HTML 转义（XSS）');
+
+// 浮层：出现 → 过滤 → 移动 → 选中 → 收起的完整链路
+A.byId.hostInput.value = '@';
+A.byId.hostInput.selectionStart = 1;
+A.byId.hostInput.selectionEnd = 1;
+A.sandbox.updateAtMenu();
+check(!!SA.at && SA.at.items.length === 3, '打一个 @ 就该列出 3 个候选');
+check(A.byId.atMenu.hidden === false && A.byId.atMenu._html.includes('在线真人'),
+  '浮层要显示出来，并带「在线真人」分组头');
+check(A.byId.atMenu._html.includes('已启用模型'), '浮层要带「已启用模型」分组头');
+check(/class="at-item on"/.test(A.byId.atMenu._html), '第一个候选应默认高亮');
+A.sandbox.moveAt(1);
+check(SA.at.idx === 1, '↓ 应把高亮移到第 2 项');
+A.sandbox.moveAt(-1);
+check(SA.at.idx === 0, '↑ 应把高亮移回第 1 项');
+
+A.byId.hostInput.value = '@小';
+A.byId.hostInput.selectionStart = 2;
+A.sandbox.updateAtMenu();
+check(!!SA.at && SA.at.items.length === 1 && SA.at.items[0].name === '小李',
+  '@ 后接着打字应按名字过滤');
+const atPickName = SA.at.items[0].name;
+A.sandbox.pickAt(0);
+check(A.byId.hostInput.value === '@' + atPickName + ' ',
+  '选中后应把 @token 换成「@名字 + 空格」，光标落到后面');
+check(A.byId.atMenu.hidden === true && SA.at === null, '选中后浮层要收起来');
+
+A.byId.hostInput.value = '@小李 ';
+A.byId.hostInput.selectionStart = 4;
+A.sandbox.updateAtMenu();
+check(SA.at === null && A.byId.atMenu.hidden === true,
+  '@token 打完（后面跟了空格）就该收起浮层，别一直挡着');
+
+SA.members = [{ uid: 'u-me', nickname: '我', online: true }];
+SA.room = { id: 'room-at', name: 'at房', open: true, participants: [] };
+A.byId.hostInput.value = '@';
+A.byId.hostInput.selectionStart = 1;
+A.sandbox.updateAtMenu();
+check(SA.at === null, '房间里既没别人也没模型时，打 @ 不该弹一个空浮层');
+
+// 消息渲染 + 右侧「被点名」
+SA.members = [
+  { uid: 'u-me', nickname: '我', online: true },
+  { uid: 'u-a', nickname: '小李', online: true },
+];
+SA.room = cfg.rooms[0];
+SA.roomId = cfg.rooms[0].id;
+const atMsg = A.sandbox.buildMessage({ id: 'm-at', role: 'user', speaker: '老张', uid: 'u-me', content: '看下 @小李' });
+check(atMsg._html.includes('<span class="at-tag">@小李</span>'),
+  '真人发言里的 @真人 要渲染成高亮标签');
+const atModelMsg = A.sandbox.buildMessage({ id: 'm-at2', role: 'assistant', speaker: '某模型', content: '看下 @小李' });
+check(!atModelMsg._html.includes('at-tag'), '模型的发言不做 @ 高亮（它没有点名的资格）');
+
+SA.messages = [{ id: 'u1', role: 'user', speaker: '老张', uid: 'u-me',
+  content: '看下 @小李', mentions: { users: ['u-a'], models: [], names: ['小李'] } }];
+A.sandbox.renderPeople();
+const atPeople = A.byId.peopleList.children;
+check(atPeople.length === 2, `右侧真人名单应渲染 2 人，实际 ${atPeople.length}`);
+check(atPeople[1]._html.includes('at-flag') && atPeople[1]._html.includes('被提醒'),
+  '被 @ 的真人要在右侧名单显示「被提醒」标记');
+check(!atPeople[0]._html.includes('at-flag'), '没被 @ 的真人不应显示标记');
+
+// @真人提醒的「响铃 + 闪烁」：notifyMentions 给被 @ 的在线他人加 flash（右侧闪烁 4 秒）
+SA.flash = [];
+A.sandbox.notifyMentions({ uid: 'u-x', mentions: { users: ['u-a'], models: [], names: ['小李'] } });
+check((SA.flash || []).includes('u-a'), '@ 到在线他人时要把他的 uid 放进 flash');
+A.sandbox.renderPeople();
+check(A.byId.peopleList.children[1].className.includes('flash'),
+  '被 @ 的那一行应带 flash 类（配合一声「叮」闪 4 秒）');
+SA.flash = [];
+A.sandbox.notifyMentions({ uid: 'u-y', mentions: { users: ['u-me'], models: [], names: ['我'] } });
+check(!(SA.flash || []).length, '自己被 @ 时不该给自己加闪烁（只弹提示）');
+
+// 复位，别把状态漏给后面的断言
+SA.messages = [];
+SA.members = [];
+SA.flash = [];
+SA.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
+SA.room = cfg.rooms[0];
+SA.roomId = cfg.rooms[0].id;
+SA.uid = '';
+SA.at = null;
 
 /* ------------------------------------------------ 汇总 */
 

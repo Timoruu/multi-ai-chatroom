@@ -11,10 +11,8 @@ const S = {
   room: null,
   messages: [],
   stream: null,
-  openReplyFor: null,
   roomMode: 'create',
   picked: new Set(),
-  gap: null,          // 轮内间隔倒计时：{ next, until }，来自服务端 gap / gap_end 事件
   // ---- 多人讨论（2026-10-13）----
   uid: '',            // 我的真人身份 id：由服务端按昵称下发（localStorage 只是缓存）
   nickname: '',       // 我的昵称 = 登录账号（2026-10-15：纯昵称、免密码、不区分浏览器）
@@ -23,8 +21,13 @@ const S = {
   roomCode: '',       // 房主拿到的房间号（成员为空）
   members: [],        // 当前房间的真人成员：[{uid, nickname, online}]
   ownerUid: null,     // 房主的 uid（用来标「房主」徽标）
-  round: { required: [], spoken: [], point_at: null },
+  // ---- 第 24 批：队列循环制（服务端 run_state 下发）----
+  // run = { running, paused, current, cursor, order[] }；order 是房主排好的发言顺序。
+  run: { running: false, paused: false, current: null, cursor: 0, order: [] },
+  runInfo: '',        // 控制条下方那行小字（本轮提示 / 超时跳过的通知）
+  flash: [],          // 刚被 @ 到的真人 uid：右侧名单闪烁 + 响一声提示，几秒后自动清
   joinTarget: null,   // 正在尝试加入的房间 id
+  at: null,           // @ 补全浮层状态：{start, query, items, idx}；null = 没开
 };
 
 /* ---------- localStorage：昵称 / 身份 id / 房主钥匙 / 进过的房间 ----------
@@ -191,7 +194,7 @@ function leaveRoom(silent) {
   S.isOwner = false;
   S.ownerless = false;
   S.roomCode = '';
-  S.round = { required: [], spoken: [], point_at: null };
+  S.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
   LS.set('lastRoom', '');
   renderAll();
   renderMessages();
@@ -258,7 +261,7 @@ async function handle(m) {
       S.roomCode = m.code || '';
       S.members = m.members || [];
       S.ownerUid = m.owner_uid || null;
-      S.round = m.round_state || S.round;
+      S.run = m.run_state || S.run;
       S.joinTarget = null;
       myRooms[m.roomId] = true; saveMyRooms();
       if (m.ownerKey) { myKeys[m.roomId] = m.ownerKey; saveKeys(); }
@@ -269,7 +272,6 @@ async function handle(m) {
       applyPermissions();
       renderAll();
       renderPeople();
-      renderRound();
       refreshHistory();
       toast(S.ownerless
         ? `已进入「${S.room && S.room.name}」（公开房间 · 人人可管理，没有房主）`
@@ -307,15 +309,18 @@ async function handle(m) {
       S.members = m.members || [];
       S.ownerUid = m.owner_uid || null;
       renderPeople();
-      renderRound();
       if ($('#dlgMembers').open) renderMemberAdmin();
       break;
 
-    case 'round_state':
+    /* 队列循环制的运行状态（2026-10-16 第 24 批）：
+       running = 循环在跑；paused = 被暂停；current = 正在发言的那位（可能为 null）；
+       cursor = 下一位在 order 里的下标；order = 房主排好的发言顺序（model_ref 数组）。 */
+    case 'run_state':
       if (m.roomId !== S.roomId) return;
-      S.round = { required: m.required || [], spoken: m.spoken || [], point_at: m.point_at };
+      S.run = { running: !!m.running, paused: !!m.paused, current: m.current || null,
+                cursor: Number(m.cursor) || 0, order: m.order || [] };
       renderPeople();
-      renderRound();
+      updateRunBar();
       break;
 
     case 'kicked':
@@ -338,7 +343,7 @@ async function handle(m) {
       S.nickname = ''; S.uid = '';
       S.roomId = null; S.room = null; S.messages = []; S.members = [];
       S.isOwner = false; S.ownerless = false; S.roomCode = '';
-      S.round = { required: [], spoken: [], point_at: null };
+      S.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
       LS.set('nickname', ''); LS.set('uid', ''); LS.set('lastRoom', '');
       Object.keys(myRooms).forEach((k) => { delete myRooms[k]; });
       saveMyRooms();
@@ -377,6 +382,11 @@ async function handle(m) {
       }
       endStream();
       renderMessages();
+      if (m.message.role === 'user') {
+        // @真人 = 提醒（第 24 批）：响一声 + 右侧名单里被 @ 的那几位闪一下
+        notifyMentions(m.message);
+        renderPeople();
+      }
       break;
 
     case 'message_start':
@@ -404,33 +414,28 @@ async function handle(m) {
       break;
 
     case 'run_start':
-      S.runInfo = `正在执行：${m.label}（共 ${m.total} 位发言）`;
-      renderRunInfo();
+      S.run.running = true;
+      S.runInfo = `模型开始依次发言（本房间 ${m.total || 0} 位参与者，按顺序循环；真人可随时点「暂停模型发言」）`;
+      updateRunBar();
       setStatus({ running: true }, 'running', '模型发言中…');
-      updateStartBtn();
       break;
 
     case 'run_end':
-      S.runInfo = m.cancelled ? '已被打断，本轮剩余发言已取消。' : '本轮结束。';
-      S.gap = null;
-      renderRunInfo();
-      updateStartBtn();
+      S.run.running = false;
+      S.run.current = null;
+      S.runInfo = S.run.paused
+        ? '已暂停：当前这位说完就停了。点「继续模型发言」接着走。'
+        : '模型队列已停 —— 你或其他人再说一句，模型会接着发言。';
+      updateRunBar();
       refreshRooms();
       refreshHistory();
       break;
 
-    /* 轮内间隔：上一位说完，服务端先等 N 秒再请下一位开口。
-       这是「可打断窗口」——等待期间点「停止」或点名都会立刻接管。 */
-    case 'gap':
-      if (m.roomId !== S.roomId) return;
-      S.gap = { next: m.next || '', until: Date.now() + (Number(m.ms) || 0) };
-      startGapTick();
-      break;
-
-    case 'gap_end':
-      if (m.roomId !== S.roomId) return;
-      S.gap = null;
-      renderRunInfo();
+    /* 服务端的一句提示（暂停 / 继续 / 首字超时被跳过 等），显示在控制条下方那行。 */
+    case 'notice':
+      if (m.roomId && m.roomId !== S.roomId) return;
+      S.runInfo = m.text || '';
+      updateRunBar();
       break;
 
     case 'interrupted':
@@ -497,13 +502,12 @@ function renderAll() {
   applyPermissions();     // 先定权限（owner-only 区块 / 顶栏身份），后面的渲染才知道该画什么
   renderRooms();
   renderPeople();
-  renderRound();
   renderHostBar();
   renderParticipants();
   renderRules();
   renderRoles();
   updateStatusPill();
-  renderRunInfo();
+  updateRunBar();
 }
 
 function setStatus(status, cls, text) {
@@ -519,40 +523,40 @@ function updateStatusPill() {
     const c = st.current || {};
     pill.className = 'status running';
     pill.textContent = c.modelName ? `${c.modelName} 发言中…` : '模型发言中…';
+  } else if (S.run && S.run.paused) {
+    pill.className = 'status idle';
+    pill.textContent = '已暂停';
   } else {
     pill.className = 'status idle';
     pill.textContent = '空闲';
   }
   const cap = st.max_calls ? ` / ${st.max_calls}` : '';
   $('#callCounter').textContent = `调用 ${st.total_calls || 0}${cap}`;
-  $('#btnStop').disabled = !st.running;
-  updateStartBtn();
+  updatePauseBtns();
 }
 
-function renderRunInfo() {
+/* 控制条下方那行小字：显示「谁在说 / 队列状态 / 服务端提示」。第 24 批起取代了
+   原来的「真人阶段进度 + 轮内间隔倒计时」。 */
+function updateRunBar() {
   const el = $('#runInfo');
-  let html = '';
-  // 真人阶段进度排在前面：先看「还有谁没说话」，再看模型在跑什么
-  if (S.progText) html += `<span class="rprog">${esc(S.progText)}</span>`;
-  if (S.runInfo) {
-    html += (html ? '<span class="sep">　</span>' : '') + esc(S.runInfo);
-  }
-  if (S.gap) {
-    const left = Math.max(0, (S.gap.until - Date.now()) / 1000);
-    const wait = `⏳ 等 ${left.toFixed(1)} 秒后轮到「${esc(S.gap.next)}」（这期间可以直接点「停止发言」打断，或点名让别人接着说）`;
-    html += (html ? '<span class="sep">　</span>' : '') + '<span class="waiting">' + wait + '</span>';
-  }
-  el.innerHTML = html;
+  if (!el) return;
+  const parts = [];
+  const c = S.run && S.run.current;
+  if (c && c.modelName) parts.push(`<span class="rprog">正在发言：<b>${esc(c.modelName)}</b></span>`);
+  else if (S.run && S.run.running) parts.push('<span class="rprog">模型队列运行中…</span>');
+  else if (S.run && S.run.paused) parts.push('<span class="rprog">已暂停</span>');
+  if (S.runInfo) parts.push(esc(S.runInfo));
+  el.innerHTML = parts.join('<span class="sep">　</span>');
+  updatePauseBtns();
+  markSpeaking();
 }
 
-/* 间隔倒计时：只负责每秒刷新那一行提示，真正的等待在服务端 */
-let _gapTimer = null;
-function startGapTick() {
-  if (_gapTimer) return;
-  _gapTimer = setInterval(() => {
-    if (!S.gap) { clearInterval(_gapTimer); _gapTimer = null; renderRunInfo(); return; }
-    renderRunInfo();
-  }, 200);
+/* 右侧模型卡高亮「正在发言的这位」 */
+function markSpeaking() {
+  const cur = (S.run && S.run.current && S.run.current.modelRef) || '';
+  $$('#participantList > .card').forEach((el) => {
+    el.classList.toggle('speaking', !!cur && el.dataset.ref === cur);
+  });
 }
 
 /* ------------------------------------------------ 多人：身份门槛 / 权限 / 真人名单 / 轮次 */
@@ -609,7 +613,7 @@ function logout() {
   S.uid = '';
   S.roomId = null; S.room = null; S.messages = []; S.members = [];
   S.isOwner = false; S.ownerless = false; S.roomCode = '';
-  S.round = { required: [], spoken: [], point_at: null };
+  S.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
   LS.set('nickname', ''); LS.set('uid', ''); LS.set('lastRoom', '');
   Object.keys(myRooms).forEach((k) => { delete myRooms[k]; });
   saveMyRooms();
@@ -660,6 +664,16 @@ function applyPermissions() {
   const owner = iAmOwner();
   const ownerless = iAmOwnerless();
   $$('.owner-only').forEach((el) => { el.hidden = !owner; });
+  // 「规则 / 角色」的修改入口（第 19 批起 = 左栏「规则」「角色」区块标题栏的「修改」按钮
+  // + 房间控制条的「规则 / 角色」）：只有这一间的房主能改；
+  // 无主房间（默认讨论室）跟随后台默认，谁都不给。
+  const canEditHere = owner && !ownerless;
+  const sbBar = $('#btnRoomScopeBar');
+  if (sbBar) sbBar.hidden = !canEditHere;
+  const edRules = $('#btnEditRules');
+  if (edRules) edRules.hidden = !canEditHere;
+  const edRoles = $('#btnEditRoles');
+  if (edRoles) edRoles.hidden = !canEditHere;
   // 回收站里可能同时装着好几个房间的残骸，能还原/彻底删除的是「管着至少一个房间的人」
   $('#btnTrash').hidden = Object.keys(myKeys).length === 0 && !owner;
   const lv = $('#btnLeave');
@@ -686,7 +700,7 @@ function applyPermissions() {
         : (open ? '公开房间 · 谁都能进' : '房间号 ' + S.roomCode));
     rc.title = ownerless
       ? '这是产品自带的默认讨论室：没有房主，所有人的权限都一样'
-        + '（添加模型 / 改房间设置 / 清空历史 / 自由讨论 / 移出成员都能用）。它不能被删除。'
+        + '（添加模型 / 改房间设置 / 清空历史 / 暂停模型发言 / 移出成员都能用）。它不能被删除。'
       : (open
         ? '公开房间（房主可改回私有）：别人打开这个地址、点这个房间就直接进来，不需要房间号'
         : '把它发给要一起讨论的人，他们在自己电脑上打开这个地址、点这个房间、输入房间号就能进来');
@@ -696,26 +710,26 @@ function applyPermissions() {
 function renderPeople() {
   const box = $('#peopleList');
   if (!box) return;
-  const hint = $('#roundHint');
   if (!S.roomId) {
     box.innerHTML = '<div class="card card-sub">还没进房间</div>';
-    if (hint) hint.textContent = '';
     return;
   }
-  const spoken = new Set(S.round.spoken || []);
-  const req = new Set(S.round.required || []);
+  // 「被提醒」= 最近一条真人发言里 @ 到的真人（@真人只做提醒，不影响谁先发言）
+  const mentioned = new Set(((lastMentions() || {}).users) || []);
+  const flashing = new Set(S.flash || []);
   const owner = iAmOwner();
   box.innerHTML = '';
   (S.members || []).forEach((p) => {
     const el = document.createElement('div');
     const isMe = p.uid === S.uid;
-    const done = spoken.has(p.uid);
-    el.className = 'person' + (isMe ? ' me' : '') + (p.online ? '' : ' off');
+    el.dataset.uid = p.uid || '';
+    el.className = 'person' + (isMe ? ' me' : '') + (p.online ? '' : ' off')
+      + (flashing.has(p.uid) ? ' flash' : '');
     el.innerHTML = `
       <span class="pdot ${p.online ? 'on' : ''}" title="${p.online ? '在线' : '离线'}"></span>
       <span class="pname">${esc(p.nickname || '某人')}${isMe ? '（我）' : ''}</span>
       <span class="badge-owner" ${p.uid === S.ownerUid ? '' : 'hidden'}>房主</span>
-      <span class="tick ${done ? 'done' : ''}">${done ? '✓ 已发言' : (req.has(p.uid) ? '待发言' : '—')}</span>
+      ${mentioned.has(p.uid) ? '<span class="at-flag" title="有人刚在发言里 @ 了他">被提醒</span>' : ''}
       ${owner && !isMe ? '<button class="mini" data-a="kick" title="移出房间">移出</button>' : ''}`;
     el.addEventListener('click', (e) => {
       if (e.target.dataset.a === 'kick') kickMember(p.uid, p.nickname);
@@ -723,31 +737,65 @@ function renderPeople() {
     box.appendChild(el);
   });
   if (!(S.members || []).length) box.innerHTML = '<div class="card card-sub">还没记上成员</div>';
-  if (hint) {
-    const n = req.size, d = [...req].filter((u) => spoken.has(u)).length;
-    hint.textContent = n ? `本轮 ${d}/${n} 已发言` : '';
+}
+
+/* @真人提醒（第 24 批）：被 @ 到的在线真人 —— 响一声「叮」+ 名单里闪 4 秒。
+   自己发的消息不提醒自己；离线的人不提醒（他看不到）。 */
+function notifyMentions(msg) {
+  const men = (msg && msg.mentions) || null;
+  const uids = (men && men.users) || [];
+  if (!uids.length) return;
+  if (msg.uid && msg.uid === S.uid) return;                  // 自己发的不用提醒自己
+  const online = new Set((S.members || []).filter((p) => p.online).map((p) => p.uid));
+  const hit = uids.filter((u) => online.has(u) && u !== S.uid);
+  const mine = uids.includes(S.uid);
+  if (hit.length) {
+    S.flash = Array.from(new Set((S.flash || []).concat(hit)));
+    setTimeout(() => { S.flash = (S.flash || []).filter((u) => !hit.includes(u)); renderPeople(); }, 4000);
   }
+  if (hit.length || mine) playNotify();
+  if (mine) toast('这条消息里 @ 了你');
 }
 
-/* 真人阶段进度：整轮成立的条件是「当前在线的真人都说过一句」 */
-function renderRound() {
-  const n = (S.round.required || []).length;
-  const d = (S.round.required || []).filter((u) => (S.round.spoken || []).includes(u)).length;
-  S.progText = n
-    ? `真人阶段：${d}/${n} 已发言` + (d >= n ? ' → 模型开始回应' : '，全说完就自动开始；等不及可点「启动新一轮」')
-    : '';
-  renderRunInfo();
+/* 提示音：用 Web Audio 现场合成一小段「叮」，不依赖任何音频文件。 */
+let _ac = null;
+function playNotify() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!_ac) _ac = new AC();
+    if (_ac.state === 'suspended') _ac.resume();
+    const t = _ac.currentTime;
+    const o = _ac.createOscillator();
+    const g = _ac.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, t);
+    o.frequency.setValueAtTime(1320, t + 0.11);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+    o.connect(g); g.connect(_ac.destination);
+    o.start(t); o.stop(t + 0.34);
+  } catch (e) { /* 浏览器不给放音就安静跳过，不打扰 */ }
 }
 
-function updateStartBtn() {
-  const b = $('#btnStartRound');
-  if (!b) return;
-  const running = !!(S.status && S.status.running);
-  b.textContent = running ? '打断并重启' : '启动新一轮';
-  b.title = running
-    ? '现在正有一轮在跑。按下去会打断它并立刻重开一轮（上面会显示本轮是谁启动的）'
-    : '不等其他人了，现在就让模型依次发言';
-  b.disabled = !S.roomId;
+/* 「暂停模型发言 / 继续模型发言」两个按钮的显示与可用性（第 24 批）
+   —— 取代原来的「启动新一轮 / 停止发言」。暂停只影响模型：当前这位说完就停，
+   队列里其余的不再开口；真人自己照常用。恢复必须点「继续」。 */
+function updatePauseBtns() {
+  const bP = $('#btnPause');
+  const bR = $('#btnResume');
+  if (!bP || !bR) return;
+  const paused = !!(S.run && S.run.paused);
+  const running = !!(S.run && S.run.running);
+  bP.hidden = paused;
+  bR.hidden = !paused;
+  bP.disabled = !S.roomId;
+  bR.disabled = !S.roomId;
+  bP.title = running
+    ? '当前这位模型说完就停，队列里其余的不再开口；真人发言不受影响。'
+    : '暂停后模型不再自动开口；等你或其他人发言、或点「继续」再走。';
+  bR.title = '解除暂停，模型按顺序接着发言（真人发言不会自动解除暂停）。';
 }
 
 async function kickMember(uid, nickname) {
@@ -788,11 +836,6 @@ function renderMemberAdmin() {
     });
     box.appendChild(el);
   });
-}
-
-function startRound() {
-  if (!S.roomId) { toast('先进一个房间', true); return; }
-  send({ type: 'start_round', roomId: S.roomId });
 }
 
 function openMembers() {
@@ -853,10 +896,18 @@ function enterAsOwner(roomId, ownerKey) {
 
 function newRoom() {
   S.roomMode = 'create';
+  S.editingRoomId = null;             // 新建：房间还没建出来，规则 / 角色入口不出现
   $('#dlgRoomTitle').textContent = '新建房间';
   $('#rName').value = '';
   $('#rOpen').checked = false;        // 新房间默认私有（要房间号）；默认讨论室才是公开的
   $('#rNewNote').hidden = false;      // 「新房间不含参与者」这句只在新建时出现
+  // 规则 / 角色要等房间建好、拿到房主钥匙之后才能改（入口在房间卡和房间内控制条上）。
+  // 原来这里会露出一个入口，但它读的是「当前所在房间」—— 没进房点了没反应，
+  // 人在别的房里点一下反而改到那一间。所以新建时直接不给。
+  const scopeBtnNew = $('#btnRoomScope');
+  if (scopeBtnNew) scopeBtnNew.hidden = true;
+  const scopeNoteNew = $('#rScopeNote');
+  if (scopeNoteNew) { scopeNoteNew.hidden = true; scopeNoteNew.textContent = ''; }
   updateRoomOpenNote();
   $('#dlgRoom').showModal();
 }
@@ -881,6 +932,18 @@ function renameRoom(room) {
   $('#rName').value = room.name;
   $('#rOpen').checked = !!room.open;   // 房主可以在这里把房间改成公开 / 改回私有
   $('#rNewNote').hidden = true;        // 改设置不是新建，不显示「不含参与者」那句
+  // 房间级规则 / 角色入口（第 17 批）：只有房主能改自己房间那份；
+  // 默认讨论室是无主房间 → 跟随后台默认，不给他入口（改也改不动，服务端也拒）。
+  const scopeBtn = $('#btnRoomScope');
+  if (scopeBtn) scopeBtn.hidden = !canEditScope(room);
+  const scopeNote = $('#rScopeNote');
+  if (scopeNote) {
+    scopeNote.hidden = !iAmOwner();
+    scopeNote.textContent = room.no_owner
+      ? '默认讨论室是所有人共用的房间：它的规则和角色跟随后台默认，不能单独修改。'
+      : '这一间可以有自己的规则和角色：规则可逐条增删（默认规则也能删），'
+        + '角色只能新增自己的、删不掉默认角色。';
+  }
   updateRoomOpenNote();
   $('#dlgRoom').showModal();
 }
@@ -911,7 +974,7 @@ async function deleteRoom(room) {
     S.isOwner = false;
     S.ownerless = false;
     S.roomCode = '';
-    S.round = { required: [], spoken: [], point_at: null };
+    S.run = { running: false, paused: false, current: null, cursor: 0, order: [] };
     LS.set('lastRoom', '');
   }
   renderAll();
@@ -1017,61 +1080,12 @@ async function emptyTrash() {
 
 /* ------------------------------------------------ 中栏：控制条 */
 
+/* 控制条（第 24 批）：原来的「自动轮流 / 轮内间隔 / 自由讨论 / 总结者 / 启动新一轮 /
+   停止发言」全部取消 —— 现在只有一条规则（真人发言后模型按顺序接着说话），
+   所以控制条只剩「暂停模型发言 / 继续模型发言」+ 房主的「规则 / 角色」入口。
+   这里只负责让按钮跟运行状态对上。 */
 function renderHostBar() {
-  const sel = $('#summarizerSelect');
-  const parts = roomParticipants();
-  sel.innerHTML = parts.map((p) =>
-    `<option value="${esc(p.model_ref)}">${esc(p.display_name)}</option>`).join('');
-  const dbg = (S.room && S.room.debate) || {};
-  if (dbg.moderator_summary_model_ref) sel.value = dbg.moderator_summary_model_ref;
-  if (dbg.free_discussion_rounds) $('#roundsInput').value = dbg.free_discussion_rounds;
-  const auto = autoSpeakOn();
-  const box = $('#autoSpeak');
-  if (box) {
-    box.checked = auto;
-    const grp = box.closest ? box.closest('.group') : null;
-    if (grp && grp.classList) grp.classList.toggle('on', auto);
-  }
-  // 轮内间隔（房间设置，按秒展示；下限 0.5 秒 / 上限 60 秒）
-  const gEl = $('#gapInput');
-  if (gEl && document.activeElement !== gEl) gEl.value = gapSeconds();
-}
-
-/* 轮内间隔：房间 debate.auto_speak_gap_ms → 秒（下限 0.5 秒，保留 0.1 秒精度） */
-function gapSeconds() {
-  const dbg = (S.room && S.room.debate) || {};
-  const ms = Number(dbg.auto_speak_gap_ms);
-  return Math.max(0.5, Math.round((ms > 0 ? ms : 3000) / 100) / 10);
-}
-
-/* 改轮内间隔：写回 debate.auto_speak_gap_ms（唯一事实来源是 config.json） */
-async function setGap() {
-  if (!S.roomId || !S.room) return;
-  const el = $('#gapInput');
-  let sec = parseFloat(el.value);
-  if (!sec || sec < 0.5) sec = 0.5;      // 下限 0.5 秒（2026-10-15 起放开；原为至少 3 秒）
-  if (sec > 60) sec = 60;
-  sec = Math.round(sec * 10) / 10;
-  el.value = sec;
-  const dbg = S.room.debate || {};
-  if (sec === gapSeconds()) return;      // 没变化就不用写盘
-  const debate = Object.assign({}, dbg, { auto_speak_gap_ms: sec * 1000 });
-  try {
-    const d = await api('/api/rooms/' + encodeURIComponent(S.roomId), {
-      method: 'PATCH', body: JSON.stringify({ debate }),
-    });
-    S.room = d.room;
-    toast(`轮内间隔已改为 ${sec} 秒：上一位说完后等 ${sec} 秒，下一位才开口`);
-  } catch (e) {
-    toast('保存失败：' + e.message, true);
-    renderHostBar();     // 失败就回到真实状态，不给假界面
-  }
-}
-
-/* 「自动轮流」开关：房间级设置，默认开（2026-10-13 用户定稿） */
-function autoSpeakOn() {
-  const dbg = (S.room && S.room.debate) || {};
-  return dbg.auto_speak !== false;
+  updatePauseBtns();
 }
 
 function roomParticipants() {
@@ -1081,6 +1095,13 @@ function roomParticipants() {
   return (S.room.participants || [])
     .filter((p) => p.enabled !== false && byId[p.model_ref])
     .map((p) => Object.assign({}, byId[p.model_ref], {
+      // ⚠️ 2026-10-16 第 23 批修：模型库条目里只有 `id`（就是 model_ref），**没有 model_ref 字段**。
+      // 这里原来只 Object.assign 了库条目，于是所有消费方 roomParticipants() 的地方拿 p.model_ref
+      // 全是 undefined —— 三处受害：① 控制条「总结者」下拉的 <option value> 变空串（靠服务端
+      // fallback 到 moderator_summary_model_ref 才勉强能用，「选非默认那位」就静默失效）；
+      // ② 消息上「让…回应这条」发出的 modelRef 是空 → 服务端点名直接拒（这条一直是坏的）；
+      // ③ 第 23 批的 @ 补全候选拿不到模型 id。显式补上 model_ref 后三处一起好。
+      model_ref: p.model_ref,
       role: p.role_override || '',
     }));
 }
@@ -1089,74 +1110,207 @@ function findModel(ref) {
   return (S.config && S.config.models || []).find((m) => m.id === ref) || null;
 }
 
+/* ------------------------------------------------ @ 补全（2026-10-16 第 23 批）
+
+   主持人输入 @ 时弹出候选浮层：**在线真人（不含自己）+ 本房间已启用的模型**。
+   离线的真人、被停用的参与者都不进候选 —— 后者与第 22 批「停用的人不能被点名」口径一致。
+
+   ⚠️ @ 的对象分两种，效果完全不同，千万别混：
+   - @模型 → 沿用旧语义：**第一个被 @ 的模型**排到本轮第一位（服务端 point_at）；
+   - @真人 → **只做提醒**：消息正文高亮 + 右侧真人名单打「被点名」标记，
+              绝不进 point_at —— 真人 uid 一旦被当模型送进去，服务端 _speak() 会拿它去
+              resolve、找不到就报「模型 xxx 不在模型库里，已跳过」，白白跳掉第一位、
+              把这一轮搅坏。服务端 host_message() 里还有一道同样的校验兜底。
+   断言见 tools/_test_cards.js 的 A23 节。 */
+
+function atCandidates() {
+  const out = [];
+  (S.members || []).forEach((p) => {
+    if (!p.online || !p.uid || p.uid === S.uid) return;      // 只列在线的、不是自己的
+    out.push({ kind: 'user', id: p.uid, name: p.nickname || '某人', sub: '真人' });
+  });
+  roomParticipants().forEach((p) => {
+    out.push({ kind: 'model', id: p.model_ref, name: p.display_name,
+               sub: p.provider_name || '模型' });
+  });
+  return out;
+}
+
+/* 正文高亮用：房间里**所有**名字（含离线的、含自己）—— 打出来的 @ 就该有反馈，
+   哪怕这位不在候选里（离线的人不会被解析成 mentions）。长名字优先，免得短名吃掉长名。 */
+function mentionNames() {
+  const out = [];
+  (S.members || []).forEach((p) => { if (p.nickname) out.push(p.nickname); });
+  roomParticipants().forEach((p) => { if (p.display_name) out.push(p.display_name); });
+  return out.filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => b.length - a.length);
+}
+
+const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/* 把正文里的 @某某 高亮成标签。
+   ⚠️ 先在原文上按正则切段、逐段 esc，不能先整体 esc 再替换 —— 名字里带 & 或 < 时
+   先 esc 会让正则匹配不上（老实现就是这么漏的）。 */
+function highlightMentions(text) {
+  const names = mentionNames();
+  if (!names.length) return esc(text);
+  const re = new RegExp('@(?:' + names.map(reEsc).join('|') + ')', 'g');
+  const out = [];
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    out.push(esc(text.slice(last, m.index)));
+    out.push('<span class="at-tag">' + esc(m[0]) + '</span>');
+    last = m.index + m[0].length;
+  }
+  out.push(esc(text.slice(last)));
+  return out.join('');
+}
+
+/* 从正文里解析所有 @某某：拿已知名字做前缀匹配（长名优先）。
+   返回 {users:[uid], models:[ref], names:[名字]} —— 真人只进 users，绝不进 point_at。 */
+function parseMentions(text) {
+  const cands = atCandidates().slice().sort((a, b) => b.name.length - a.name.length);
+  const users = [];
+  const models = [];
+  const names = [];
+  let i = text.indexOf('@');
+  while (i >= 0) {
+    const hit = cands.find((c) => text.startsWith(c.name, i + 1));
+    if (hit && !names.includes(hit.name)) {
+      names.push(hit.name);
+      (hit.kind === 'user' ? users : models).push(hit.id);
+      i = text.indexOf('@', i + 1 + hit.name.length);
+    } else {
+      i = text.indexOf('@', i + 1);
+    }
+  }
+  return { users, models, names };
+}
+
+/* 最近一条真人发言里 @ 到的真人 —— 右侧名单的「被点名」标记就靠它。
+   不发散、不累积：谁最后被 @ 就是谁，下一条真人发言会自然覆盖。 */
+function lastMentions() {
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const m = S.messages[i];
+    if (m && m.role === 'user') return m.mentions || null;
+  }
+  return null;
+}
+
+/* 光标前那个还没打完的 @token → {start, query}；打了空格 / 标点就算闭合，返回 null */
+function atQuery(ta) {
+  const before = ta.value.slice(0, ta.selectionStart);
+  const m = before.match(/(?:^|[\s。，,、])@([^\s@]*)$/);
+  if (!m) return null;
+  return { start: ta.selectionStart - m[1].length - 1, query: m[1] };
+}
+
+function atMenuNode() { return $('#atMenu'); }
+
+function closeAtMenu() {
+  const box = atMenuNode();
+  if (box) { box.hidden = true; box.innerHTML = ''; }
+  S.at = null;
+}
+
+function renderAtMenu() {
+  const box = atMenuNode();
+  if (!box || !S.at) return;
+  let html = '';
+  let lastKind = null;
+  S.at.items.forEach((c, i) => {
+    if (c.kind !== lastKind) {
+      html += `<div class="at-menu-head">${c.kind === 'user' ? '在线真人' : '已启用模型'}</div>`;
+      lastKind = c.kind;
+    }
+    html += `<div class="at-item${i === S.at.idx ? ' on' : ''}" data-i="${i}">`
+      + `<span class="at-kind ${c.kind}"></span>`
+      + `<span class="at-name">${esc(c.name)}</span>`
+      + `<span class="at-sub">${esc(c.sub)}</span></div>`;
+  });
+  box.innerHTML = html;
+  box.hidden = false;
+}
+
+/* 按当前光标前的 @token 重算候选。只在「query 没变」时保留高亮位置，
+   这样连着打字符不会把选中项跳回去。 */
+function updateAtMenu() {
+  const ta = $('#hostInput');
+  if (!ta || S.roomId == null) { closeAtMenu(); return; }
+  const q = atQuery(ta);
+  if (!q) { closeAtMenu(); return; }
+  const key = q.query.toLowerCase();
+  const hit = atCandidates().filter((c) => !key || c.name.toLowerCase().includes(key));
+  if (!hit.length) { closeAtMenu(); return; }
+  const keep = (S.at && S.at.query === q.query) ? S.at.idx : 0;
+  S.at = { start: q.start, query: q.query, items: hit,
+           idx: Math.max(0, Math.min(keep, hit.length - 1)) };
+  renderAtMenu();
+}
+
+function moveAt(delta) {
+  if (!S.at) return false;
+  const n = S.at.items.length;
+  S.at.idx = (S.at.idx + delta + n) % n;
+  renderAtMenu();
+  return true;
+}
+
+/* 选中候选：把 @token 换成 @名字 + 空格，光标落到名字后面 */
+function pickAt(i) {
+  const ta = $('#hostInput');
+  if (!S.at || !ta) return;
+  const c = S.at.items[i];
+  if (!c) return;
+  const head = ta.value.slice(0, S.at.start);
+  const tail = ta.value.slice(ta.selectionStart);
+  const ins = '@' + c.name + ' ';
+  ta.value = head + ins + tail;
+  const caret = head.length + ins.length;
+  try { ta.setSelectionRange(caret, caret); } catch (e) { /* 老浏览器不给就算了 */ }
+  closeAtMenu();
+  autoGrow(ta);
+  try { ta.focus(); } catch (e) { /* 同上 */ }
+}
+
 function sendHostMessage() {
   const el = $('#hostInput');
   const text = el.value.trim();
   if (!text) return;
   if (!S.roomId) { toast('先选一个房间，输入房间号进去', true); return; }
   if (!S.nickname) { showGate(); toast('先填一个昵称', true); return; }
-  // 支持用 @模型名 点名
-  let pointAt = null;
-  const parts = roomParticipants();
-  const m = text.match(/@([^\s@，,。:：]+)/);
-  if (m) {
-    const token = m[1];
-    const hit = parts.find((p) => p.display_name.includes(token) || p.model.includes(token)
-      || p.model_ref.includes(token));
-    if (hit) pointAt = hit.model_ref;
-  }
-  // 自动轮流（房间设置）：开启时这一轮由参与者依次发言，@某人 则让他排第一位
-  const auto = !$('#autoSpeak') || $('#autoSpeak').checked;
-  // 带上 uid / 昵称：服务端靠它记「这句话是谁说的」并点亮这位真人的「已发言」勾
+  // @ 点名（2026-10-16 第 23/24 批；2026-10-19 第 26 批改成 @ 几位就说几位）：
+  //   @模型 → 按出现先后依次插队到「下一个开口位」（不打断正在说的那位）；
+  //   @真人 → 只做提醒（服务端记进 mentions；前端响铃 + 闪烁）。
+  const men = parseMentions(text);
+  const pointList = men.models;   // ⚠️ 只放模型（真人 uid 会被服务端拒）；pointAt 保留给旧服务端兼容
+  // 带上 uid / 昵称：服务端靠它记「这句话是谁说的」
   send({
-    type: 'host_message', roomId: S.roomId, content: text, pointAt, auto,
-    uid: S.uid, nickname: S.nickname,
+    type: 'host_message', roomId: S.roomId, content: text,
+    pointAt: pointList[0] || null, pointAtList: pointList,
+    uid: S.uid, nickname: S.nickname, mentions: men,
   });
+  closeAtMenu();
   el.value = '';
   autoGrow(el);
 }
 
+/* 点名某位模型接着说 —— 现在等于「插队到下一个开口位（不打断当前那位）」。 */
 function pointSpeaker(ref) {
-  if (!S.roomId) return;
+  if (!S.roomId || !ref) return;
   send({ type: 'point', roomId: S.roomId, modelRef: ref });
 }
 
-function freeDiscussion() {
-  if (!S.roomId) return;
-  const n = parseInt($('#roundsInput').value, 10) || 3;
-  send({ type: 'free', roomId: S.roomId, rounds: n });
+/* 暂停模型发言（第 24 批）：当前这位说完就停；队列里其余的不再开口；真人不受影响。 */
+function pauseModels() {
+  if (!S.roomId) { toast('先进一个房间', true); return; }
+  send({ type: 'pause', roomId: S.roomId });
 }
 
-/* 切换「自动轮流」：写回房间的 debate.auto_speak（唯一事实来源是 config.json） */
-async function toggleAutoSpeak() {
-  if (!S.roomId || !S.room) return;
-  const on = !!$('#autoSpeak').checked;
-  const debate = Object.assign({}, S.room.debate || {}, { auto_speak: on });
-  try {
-    const d = await api('/api/rooms/' + encodeURIComponent(S.roomId), {
-      method: 'PATCH', body: JSON.stringify({ debate }),
-    });
-    S.room = d.room;
-    toast(on
-      ? '已开启自动轮流：房间里在线的真人各说满一句 = 一轮，之后参与者依次各发言一次'
-      : '已关闭自动轮流：只能点某位参与者的「发言」单独请他开口');
-  } catch (e) {
-    toast('保存失败：' + e.message, true);
-    renderHostBar();     // 失败就回到真实状态，不给假界面
-  }
-  renderHostBar();
-}
-
-function summarize() {
-  if (!S.roomId) return;
-  // 新房间默认没有参与者 → 下拉是空的，别发一个空 modelRef 出去
-  if (!roomParticipants().length) { toast('这个房间还没有模型参与者，先在右侧「添加模型」', true); return; }
-  send({ type: 'summarize', roomId: S.roomId, modelRef: $('#summarizerSelect').value });
-}
-
-function stopAll() {
-  if (!S.roomId) return;
-  send({ type: 'stop', roomId: S.roomId });
+/* 继续模型发言：解除暂停，队列接着走（真人发言不会自动解除暂停）。 */
+function resumeModels() {
+  if (!S.roomId) { toast('先进一个房间', true); return; }
+  send({ type: 'resume', roomId: S.roomId });
 }
 
 function clearRoom() {
@@ -1195,7 +1349,8 @@ function buildMessage(m) {
   const isHost = m.role === 'user';
   const mine = isHost && !!m.uid && m.uid === S.uid;          // 这条是我说的
   const ownerMsg = isHost && !!m.uid && m.uid === S.ownerUid; // 这条是房主说的
-  wrap.className = 'msg ' + (isHost ? 'host' : 'model') + (mine ? ' me' : '');
+  // 第 24 批：**我自己的发言靠左**，其他真人 + 所有模型的发言靠右（用户明确要求）。
+  wrap.className = 'msg ' + (isHost ? 'host' : 'model') + (mine ? ' mine me' : ' other');
   wrap.dataset.id = m.id;
 
   const parts = [];
@@ -1222,42 +1377,13 @@ function buildMessage(m) {
     parts.push('<details class="reason" hidden><summary>思考过程</summary><div class="reason-body"></div></details>');
   }
 
-  parts.push(`<div class="msg-body">${esc(m.content)}${m.streaming ? '<span class="caret"></span>' : ''}</div>`);
+  // 真人发言里的 @某某 高亮成标签：@真人只是提醒；@模型才是点名（见 parseMentions）
+  const bodyHtml = isHost ? highlightMentions(m.content) : esc(m.content);
+  parts.push(`<div class="msg-body">${bodyHtml}${m.streaming ? '<span class="caret"></span>' : ''}</div>`);
 
-  if (!isHost) {
-    parts.push(`<div class="msg-acts"><button class="mini" data-act="reply">让…回应这条</button></div>`);
-  }
-
+  // 「让…回应这条」按钮已随第 24 批删除：现在 @模型 就会让它插队接话。
   wrap.innerHTML = parts.join('');
-
-  const btn = wrap.querySelector('[data-act="reply"]');
-  if (btn) {
-    btn.addEventListener('click', () => toggleReplyPicker(wrap, m));
-  }
   return wrap;
-}
-
-function toggleReplyPicker(wrap, m) {
-  const old = wrap.querySelector('.reply-picker');
-  if (old) { old.remove(); return; }
-  $$('.reply-picker').forEach((e) => e.remove());
-  const picker = document.createElement('div');
-  picker.className = 'card-acts reply-picker';
-  roomParticipants().forEach((p) => {
-    const b = document.createElement('button');
-    b.className = 'mini';
-    b.textContent = p.display_name;
-    b.addEventListener('click', () => {
-      send({
-        type: 'point', roomId: S.roomId, modelRef: p.model_ref,
-        replyTo: m.id,
-        instruction: '',
-      });
-      picker.remove();
-    });
-    picker.appendChild(b);
-  });
-  wrap.appendChild(picker);
 }
 
 function startStream(id) {
@@ -1306,36 +1432,121 @@ function endStream() {
 }
 
 /* ------------------------------------------------ 左栏：规则 / 角色说明模块 */
-/* 这两个模块不改任何东西，只把「实际发给模型的提示词」摊开给人看：
-   规则 = shared_prompt（每个模型每轮都带）；角色 = 预置角色的提示词原文（选中后追加一行）。 */
+/* 这两个模块**只展示**，不改任何东西：把「当前房间实际会发给模型的提示词」摊开给人看。
+   2026-10-15 第 17 批：规则和角色都改成**房间级** —— 房间自定义过就用房间那份，
+   否则跟随后台默认；默认讨论室（无主房间）永远跟随后台默认，谁也改不了。 */
+
+/* 后台**默认规则**（`{preamble, items[]}`）。老配置里可能还是「一整串」→ 就地拆一次。 */
+function defaultRules() {
+  const r = (S.config && S.config.rules) || null;
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
+    return { preamble: r.preamble || '', items: (r.items || []).slice() };
+  }
+  const text = (typeof r === 'string' && r) || ((S.config && S.config.shared_prompt) || '');
+  return text.trim() ? splitRuleText(text) : { preamble: '', items: [] };
+}
+
+/* 「…规则：1) 甲；2) 乙」→ `{preamble, items}`。与后端 split_shared_prompt 同一套拆法。
+   ⚠️ 别用 `split(/(?=\d+\)\s)/)`：零宽前瞻匹配后会强制前进一个字符，
+   两位数序号（10) / 11)）会被切成「…；1」+「0) …」，尾巴上多出一个数字。 */
+function splitRuleText(text) {
+  const marks = [];
+  const re = /(\d+)\)\s/g;
+  let m;
+  let expect = 1;
+  while ((m = re.exec(text)) !== null) {
+    if (parseInt(m[1], 10) !== expect) continue;      // 正文里偶然出现的「3)」不算分条点
+    marks.push([m.index, m.index + m[0].length]);
+    expect += 1;
+  }
+  if (!marks.length) return { preamble: String(text).trim(), items: [] };
+  const items = [];
+  for (let i = 0; i < marks.length; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1][0] : text.length;
+    const body = text.slice(marks[i][1], end).trim();
+    if (body) items.push({ id: 'rule-' + (i + 1), text: body });
+  }
+  return { preamble: text.slice(0, marks[0][0]).trim(), items };
+}
+
+/* 本房间**固化**的规则；null = 跟随默认（无主房间永远算 null：它只能跟默认）。 */
+function roomRulesBlock(room0) {
+  // 不传 room0 = 「当前所在房间」（左栏展示用）；弹窗会显式传「正在设置的那一间」。
+  const room = room0 || findRoom(S.roomId);
+  if (!room || room.no_owner) return null;
+  const got = room.rules;
+  if (got && typeof got === 'object' && !Array.isArray(got)) {
+    return { preamble: got.preamble || '', items: (got.items || []).slice() };
+  }
+  return null;
+}
+
+function rulesAreCustom(room) { return !!roomRulesBlock(room); }
+
+function effectiveRules(room) { return roomRulesBlock(room) || defaultRules(); }
+
+function rulesSourceNote() {
+  if (!S.roomId) return '（还没进房间：显示的是后台默认规则）';
+  if (rulesAreCustom()) return '本房间已自定义规则（改过之后不再跟随默认）';
+  const room = findRoom(S.roomId) || {};
+  return room.no_owner ? '默认讨论室：只能跟随后台默认规则（这里不能改）' : '本房间跟随默认规则';
+}
 
 function renderRules() {
   const box = $('#rulesBox');
   if (!box) return;
-  const text = ((S.config && S.config.shared_prompt) || '').trim();
-  if (!text) { box.innerHTML = '<div class="info-empty">config.json 里没有 shared_prompt</div>'; return; }
-  // 提示词形如「…规则：1) … 2) …」：拆成逐条；拆不开就整段显示，保证展示的就是原文
-  const chunks = text.split(/(?=\d+\)\s)/).map((s) => s.trim()).filter(Boolean);
-  let preamble = '';
-  const rules = [];
-  chunks.forEach((c) => {
-    const m = c.match(/^(\d+)\)\s*([\s\S]*)$/);
-    if (m) rules.push({ n: m[1], text: m[2] });
-    else if (!rules.length) preamble = c;
-    else rules[rules.length - 1].text += ' ' + c;   // 中间换行被拆开时并回上一条
+  const block = effectiveRules();
+  const note = $('#rulesSrc');
+  if (note) note.textContent = rulesSourceNote();
+  const items = block.items || [];
+  if (!items.length && !block.preamble) {
+    box.innerHTML = '<div class="info-empty">这个房间没有规则（模型收不到共享规则）</div>';
+    return;
+  }
+  box.innerHTML = (block.preamble ? `<div class="info-preamble">${esc(block.preamble)}</div>` : '')
+    + items.map((r, i) => `<div class="info-item"><span class="info-idx">${i + 1}</span>`
+      + `<span class="info-text">${esc(r.text || '')}</span></div>`).join('');
+}
+
+/* 后台**默认角色**（/admin 里编辑的那一份）。 */
+function defaultRoles() {
+  const block = (S.config && S.config.role_presets) || {};
+  const items = Array.isArray(block) ? block : (block.items || []);
+  return items.slice();
+}
+
+/* 房主在本房间**自建**的角色（默认角色不存在这里 —— 所以删不掉默认角色）。 */
+function roomRoles() {
+  const room = findRoom(S.roomId);
+  if (!room || room.no_owner) return [];      // 无主房间只能跟默认
+  return (room.roles || []).slice();
+}
+
+/* ------------------------------------------------ 角色预设（默认 + 本房间自建） */
+
+/* 本房间能选的角色 = 默认角色 + 房主自建（同 id 时以默认那份为准）。 */
+function rolePresets() {
+  const seen = {};
+  const out = [];
+  defaultRoles().concat(roomRoles()).forEach((x) => {
+    if (x && x.id && !seen[x.id]) { seen[x.id] = 1; out.push(x); }
   });
-  box.innerHTML = (preamble ? `<div class="info-preamble">${esc(preamble)}</div>` : '')
-    + (rules.length
-      ? rules.map((r) => `<div class="info-item"><span class="info-idx">${esc(r.n)}</span>`
-        + `<span class="info-text">${esc(r.text)}</span></div>`).join('')
-      : `<div class="info-text">${esc(text)}</div>`);
+  return out;
+}
+
+function rolesSourceNote() {
+  if (!S.roomId) return '（还没进房间：显示的是后台默认角色）';
+  const n = roomRoles().length;
+  return n ? `默认角色 + 本房间自建的 ${n} 个` : '跟随后台默认角色';
 }
 
 function renderRoles() {
   const box = $('#rolesBox');
   if (!box) return;
   const items = rolePresets();
-  if (!items.length) { box.innerHTML = '<div class="info-empty">config.json 里没有 role_presets</div>'; return; }
+  const note = $('#rolesSrc');
+  if (note) note.textContent = rolesSourceNote();
+  if (!items.length) { box.innerHTML = '<div class="info-empty">角色库是空的</div>'; return; }
   const order = [];
   const bucket = {};
   items.forEach((x) => {
@@ -1346,14 +1557,6 @@ function renderRoles() {
   box.innerHTML = order.map((g) => `<div class="info-group">${esc(g)}</div>`
     + bucket[g].map((x) => `<div class="info-role">${esc(x.prompt || x.name || x.id)}</div>`).join(''))
     .join('');
-}
-
-/* ------------------------------------------------ 角色预设（预置角色库） */
-
-function rolePresets() {
-  const block = (S.config && S.config.role_presets) || {};
-  const items = Array.isArray(block) ? block : (block.items || []);
-  return items.slice();
 }
 
 function roleOf(roleId) {
@@ -1385,18 +1588,28 @@ function fillRoleSelect(sel, selectedId, emptyLabel) {
 
 /* ------------------------------------------------ 右栏：参与者 */
 
+/* 右栏「本房间参与者 · 模型」列表。第 24 批起：
+   - 卡片顺序 = 模型的**发言顺序**（房主拖拽排序，写回 participants 数组顺序）；
+   - 房主可以在每张卡上单独设「首字超时」（留空 = 用房间默认 60 秒）；
+   - 删掉了原来每张卡上的「发言」按钮（点名改由 @模型 完成）。 */
+let _dragRef = null;
+
 function renderParticipants() {
   const box = $('#participantList');
   const room = S.room;
   if (!room) { box.innerHTML = '<div class="card card-sub">先选一个房间，输入房间号进去</div>'; return; }
   const byId = {};
   (S.config.models || []).forEach((m) => { byId[m.id] = m; });
-  const owner = iAmOwner();      // 加/删/停用模型、改角色 = 改房间配置，只有房主有按钮
+  const owner = iAmOwner();      // 加/删/停用模型、改角色、拖拽排序 = 改房间配置，只有房主有权限
   box.innerHTML = '';
-  (room.participants || []).forEach((p) => {
+  const list = room.participants || [];
+  list.forEach((p, idx) => {
     const m = byId[p.model_ref];
+    const off = p.enabled === false || !m || m.enabled === false;
     const el = document.createElement('div');
-    el.className = 'card' + (p.enabled === false || !m || m.enabled === false ? ' off' : '');
+    el.className = 'card' + (off ? ' off' : '');
+    el.dataset.ref = p.model_ref || '';
+    if (owner) el.draggable = true;
     const missing = !m;
     // 角色只看本房间的 role_override（模型库不存角色）；没有就明说「未设置」。悬停可看完整提示词。
     const ov = roleOf(p.role_override);
@@ -1404,39 +1617,117 @@ function renderParticipants() {
     const roleTip = ov.prompt || '没设角色：system 提示词里不会有角色这一行';
     const roleSrc = ov.id ? '（本房间设定）' : '';
     const nameText = m ? m.display_name : p.model_ref + '（模型库里已不存在）';
+    const tSec = Math.round((Number(p.timeout_ms) || 0) / 1000) || '';
     el.innerHTML = `
       <div class="card-top">
+        ${owner ? '<span class="drag-handle" title="按住拖动，改这一位在发言顺序里的位置">⠿</span>' : ''}
+        <span class="ord" title="发言顺序第 ${idx + 1} 位">${idx + 1}</span>
         <span class="dot ${p.enabled !== false && m && m.enabled !== false ? 'on' : ''}"></span>
         <span class="card-name" title="${esc(nameText)}">${esc(nameText)}</span>
       </div>
       <div class="card-sub one" title="${esc(roleTip)}">角色：${esc(role)}${esc(roleSrc)}</div>
+      ${owner ? `<div class="card-timeout" title="首字超时：等这么久还没开口就跳过它，换下一位（留空 = 用房间默认 60 秒）">
+        <label>首字超时</label>
+        <input type="number" min="3" max="600" step="1" data-a="timeout" value="${tSec}" placeholder="60">
+        <label>秒</label>
+      </div>` : ''}
       <div class="card-acts">
-        ${missing ? '' : `<button class="mini" data-a="speak" title="让这位接着说（会打断本轮剩余安排）">发言</button>`}
+        ${missing ? '' : ''}
         ${owner ? '<button class="mini" data-a="role">角色</button>' : ''}
         ${owner ? `<button class="mini" data-a="toggle">${p.enabled === false ? '启用' : '停用'}</button>` : ''}
         ${owner ? '<button class="mini" data-a="rm">移出</button>' : ''}
       </div>`;
     el.addEventListener('click', async (e) => {
       const a = e.target.dataset.a;
-      if (!a) return;
-      if (a === 'speak') pointSpeaker(p.model_ref);
+      if (!a || a === 'timeout') return;
       if (a === 'role') openRoleDialog(p);
       if (a === 'toggle') {
-        await patchParticipants((list) => list.map((x) =>
+        await patchParticipants((l) => l.map((x) =>
           x.model_ref === p.model_ref ? Object.assign({}, x, { enabled: p.enabled === false }) : x));
       }
       if (a === 'rm') {
-        await patchParticipants((list) => list.filter((x) => x.model_ref !== p.model_ref));
+        await patchParticipants((l) => l.filter((x) => x.model_ref !== p.model_ref));
       }
     });
+    // 首字超时（第 24 批）：写回本房间这一位参与者的 timeout_ms（留空 = 用房间默认）
+    const tIn = el.querySelector('[data-a="timeout"]');
+    if (tIn) {
+      tIn.addEventListener('mousedown', (e) => e.stopPropagation());   // 点输入框别触发拖拽
+      tIn.addEventListener('change', async () => {
+        let sec = parseFloat(tIn.value);
+        if (isNaN(sec) || sec <= 0) sec = 0;
+        if (sec > 600) sec = 600;
+        if (sec > 0 && sec < 3) sec = 3;
+        const ms = sec ? Math.round(sec * 1000) : 0;
+        tIn.value = sec || '';
+        await patchParticipants((l) => l.map((x) =>
+          x.model_ref === p.model_ref ? Object.assign({}, x, { timeout_ms: ms || null }) : x));
+        toast(ms ? `「${nameText}」首字超时设为 ${sec} 秒` : `「${nameText}」首字超时改回房间默认`);
+      });
+    }
+    // 拖拽排序（第 24 批）：拖到哪一位身上，就插到那一位前面 / 后面
+    if (owner) bindDrag(el, p);
     box.appendChild(el);
   });
   // 新房间默认没有参与者（2026-10-14 用户定），所以空态要明确告诉房主下一步干什么
-  if (!(room.participants || []).length) {
+  if (!list.length) {
     box.innerHTML = owner
       ? '<div class="card card-sub">这个房间还没有模型参与者 —— 点上面的「添加模型」把要发言的模型拉进来</div>'
       : '<div class="card card-sub">房主还没往这个房间添加模型</div>';
   }
+}
+
+/* 拖拽排序：模型卡的顺序 = 模型的发言顺序（房主拖，不做上下移动按钮）。 */
+function bindDrag(el, p) {
+  el.addEventListener('dragstart', (e) => {
+    _dragRef = p.model_ref;
+    el.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', p.model_ref); } catch (err) { /* 老浏览器忽略 */ }
+    }
+  });
+  el.addEventListener('dragend', () => {
+    _dragRef = null;
+    el.classList.remove('dragging');
+    $$('#participantList > .card').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!_dragRef || _dragRef === p.model_ref) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = el.getBoundingClientRect();
+    const after = (e.clientY - r.top) > r.height / 2;
+    el.classList.toggle('drop-after', after);
+    el.classList.toggle('drop-before', !after);
+  });
+  el.addEventListener('dragleave', () => {
+    el.classList.remove('drop-before', 'drop-after');
+  });
+  el.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const from = _dragRef;
+    el.classList.remove('drop-before', 'drop-after');
+    if (!from || from === p.model_ref) return;
+    const r = el.getBoundingClientRect();
+    const after = (e.clientY - r.top) > r.height / 2;
+    await moveParticipant(from, p.model_ref, after);
+  });
+}
+
+/* 把 from 挪到 to 的前面（after=true 则挪到 to 的后面），写回房间 participants 数组顺序。 */
+async function moveParticipant(from, to, after) {
+  const room = findRoom(S.roomId);
+  if (!room) return;
+  const list = (room.participants || []).map((p) => Object.assign({}, p));
+  const i = list.findIndex((x) => x.model_ref === from);
+  if (i < 0) return;
+  const moved = list.splice(i, 1)[0];
+  const j = list.findIndex((x) => x.model_ref === to);
+  if (j < 0) list.push(moved);
+  else list.splice(after ? j + 1 : j, 0, moved);
+  await patchParticipants(() => list);
+  toast('已调整发言顺序');
 }
 
 async function patchParticipants(fn) {
@@ -1476,6 +1767,163 @@ async function saveRoleOverride(value) {
   roleEditing = null;
   $('#dlgRole').close();
   toast(value ? '角色已设为「' + (roleOf(value).name || value) + '」' : '已清除角色，system 提示词里不再有角色这一行');
+}
+
+/* ------------------------------------------------ 房间级「规则 / 角色」弹窗（第 17 批） */
+/* 只有**房主**能改自己房间的规则和角色；默认讨论室（无主房间）跟随后台默认，谁都改不了。
+   规则：逐条增删改 + 一键恢复默认（「删除默认规则」就是这么实现的）。
+   角色：默认角色只读（能选用，不能删不能改）；房主只能新增 / 改 / 删**自建**角色。 */
+
+function canEditScope(room) {
+  // 「我管哪一间」看的是**手上有没有这一间的房主钥匙**，而不是「我此刻在不在这一间里」。
+  // 2026-10-15 第 18 批修：原来用 iAmOwner()（=当前已进入房间的房主态），
+  // 于是「自己建的房间、人没进去 / 人在别的房间」时，规则 / 角色入口会被藏起来。
+  return !!(room && !room.no_owner && myKeys[room.id]);
+}
+
+function newRuleId() {
+  return 'rule-' + Math.random().toString(16).slice(2, 10);
+}
+
+function openScopeDialog(roomArg, mode) {
+  // 入口：左栏「规则」「角色」区块的「修改」（第 20 批起**各管各的**：只改规则 / 只改角色）、
+  // 房间设置里的按钮、房间内控制条的按钮（这两个仍是「规则 / 角色」一起改）。
+  // mode = 'rules' | 'roles' | 'both'（缺省 both）。
+  // 目标房间按「传进来的 → 正在设置的那间 → 我当前所在的那间」依次取。
+  // ⚠️ 必须用 findRoom（它读的是 config.rooms 里的**全量**房间对象）；
+  //    roomById 读的是 /api/state 顶层的摘要，里面没有 rules / roles。
+  const theMode = (mode === 'rules' || mode === 'roles') ? mode : 'both';
+  const room = (roomArg && roomArg.id) ? roomArg
+    : (findRoom(S.editingRoomId) || findRoom(S.roomId));
+  if (!room || !canEditScope(room)) {
+    toast('只有这一间的房主能改它的规则 / 角色（无主房间跟随后台默认）', true);
+    return;
+  }
+  const cur = effectiveRules(room);
+  S.scope = {
+    roomId: room.id,               // 保存时认这个 id，别再依赖「当前所在房间」
+    mode: theMode,                 // 'rules' 只改规则 / 'roles' 只改角色 / 'both' 一起
+    custom: rulesAreCustom(room),  // false = 保存时发 null（跟随默认）
+    preamble: cur.preamble || '',
+    items: (cur.items || []).map((x) => ({ id: x.id || newRuleId(), text: x.text || '' })),
+    roles: (room.roles || []).map((x) => Object.assign({}, x)),
+    dirty: false,
+  };
+  renderScope();
+  $('#dlgScope').showModal();
+}
+
+function markScopeDirty() {
+  const el = $('#scopeDirty');
+  if (!el) return;
+  if (!S.scope) { el.textContent = ''; return; }
+  el.textContent = (S.scope.custom || S.scope.dirty)
+    ? '改动点「保存」后立刻生效' : '当前跟随后台默认规则';
+  el.className = 'tip' + ((S.scope.custom || S.scope.dirty) ? ' bad' : '');
+}
+
+function renderScope() {
+  const sc = S.scope;
+  if (!sc) return;
+  const rScope = findRoom(sc.roomId) || {};
+  const onlyRules = sc.mode === 'rules';
+  const onlyRoles = sc.mode === 'roles';
+  // 第 20 批：左栏两个「修改」各管各的 —— 只改其一时，另一段整个隐藏
+  const secRules = $('#scopeSecRules');
+  if (secRules) secRules.hidden = onlyRoles;
+  const secRoles = $('#scopeSecRoles');
+  if (secRoles) secRoles.hidden = onlyRules;
+  $('#scopeTitle').textContent = (onlyRules ? '本房间规则'
+    : onlyRoles ? '本房间角色' : '本房间规则 / 角色') + (rScope.name ? ' · ' + rScope.name : '');
+  $('#scopeNote').innerHTML = '这些只影响<b>本房间</b>：'
+    + (onlyRules ? '模型发言时收到的共享规则就是这里这份。'
+      : onlyRoles ? '给参与者选的角色从这里挑，也可以新增本房间自己的。'
+        : '模型发言时，规则用这里这份、角色可选这里新增的。')
+    + '后台的默认规则 / 默认角色由管理员在 /admin 维护。';
+  $('#scopePreamble').value = sc.preamble || '';
+
+  const rules = $('#scopeRuleList');
+  rules.innerHTML = sc.items.length
+    ? sc.items.map((x, i) => '<div class="card scope-item">'
+      + '<div class="card-top"><span class="info-idx">' + (i + 1) + '</span>'
+      + '<span class="card-sub one">本房间规则（默认规则也能删）</span>'
+      + '<span class="spacer"></span>'
+      + `<button type="button" class="mini danger" data-a="rule-rm" data-i="${i}">删除</button></div>`
+      + `<textarea class="scope-rule" data-i="${i}" rows="2">${esc(x.text || '')}</textarea>`
+      + '</div>').join('')
+    : '<div class="card card-sub">这个房间没有规则（模型收不到共享规则）——点「添加规则」加一条，或点「恢复为默认」。</div>';
+
+  const roles = $('#scopeRoleList');
+  roles.innerHTML = defaultRoles().map((x) => '<div class="card scope-item">'
+      + '<div class="card-top">'
+      + `<span class="card-name" title="${esc(x.name || x.id)}">${esc(x.name || x.id)}</span>`
+      + '<span class="tag">默认</span></div>'
+      + `<div class="card-sub one" title="${esc(x.prompt)}">${esc(x.prompt || '（没写提示词）')}</div>`
+      + '<div class="card-acts"><span class="tip">默认角色：只能选用，不能改也不能删'
+      + '（要改请让管理员在 /admin 改，或在这里另建一个新角色）</span></div>'
+      + '</div>').join('')
+    + sc.roles.map((x, i) => '<div class="card scope-item">'
+      + '<div class="card-top"><span class="card-name">本房间自建</span>'
+      + '<span class="spacer"></span>'
+      + `<button type="button" class="mini danger" data-a="role-rm" data-i="${i}">删除</button></div>`
+      + `<input class="scope-r-name" data-f="name" data-i="${i}" placeholder="角色名（必填）" value="${esc(x.name || '')}">`
+      + `<input class="scope-r-group" data-f="group" data-i="${i}" placeholder="分组（可不填）" value="${esc(x.group || '')}">`
+      + `<textarea class="scope-r-prompt" data-f="prompt" data-i="${i}" rows="2" placeholder="注入 system 的角色提示词">${esc(x.prompt || '')}</textarea>`
+      + '</div>').join('');
+  markScopeDirty();
+}
+
+/* 把草稿里的空行去掉、字段修剪一下；返回要提交的 body。 */
+function collectScope() {
+  const sc = S.scope;
+  sc.items = sc.items
+    .map((x) => ({ id: x.id || newRuleId(), text: String(x.text || '').trim() }))
+    .filter((x) => x.text);
+  sc.roles = sc.roles
+    .map((x) => ({
+      id: x.id,
+      name: String(x.name || '').trim(),
+      group: String(x.group || '').trim(),
+      prompt: String(x.prompt || '').trim(),
+    }))
+    .filter((x) => x.name);
+  // 第 20 批：按 mode 只交自己那一块 —— PATCH 只带出现的键，
+  // 服务端（update_room）对缺的键不动，所以「只改规则」绝不会碰角色，反之亦然。
+  if (sc.mode === 'rules') {
+    return { rules: sc.custom ? { preamble: String(sc.preamble || '').trim(), items: sc.items } : null };
+  }
+  if (sc.mode === 'roles') {
+    return { roles: sc.roles };
+  }
+  return {
+    // custom=false → 发 null = 恢复为跟随默认；否则固化成本房间自己的一份
+    rules: sc.custom ? { preamble: String(sc.preamble || '').trim(), items: sc.items } : null,
+    roles: sc.roles,
+  };
+}
+
+async function saveScope() {
+  const sc = S.scope;
+  const rid = sc && sc.roomId;
+  if (!rid) return;
+  const body = collectScope();
+  await api('/api/rooms/' + encodeURIComponent(rid), {
+    method: 'PATCH', body: JSON.stringify(body),
+  });
+  const custom = sc.custom;
+  const what = sc.mode === 'rules' ? '规则' : sc.mode === 'roles' ? '角色' : '规则 / 角色';
+  let msg;
+  if (sc.mode === 'roles') {
+    msg = '本房间角色已保存（默认角色不受影响，只更新自建角色）';
+  } else if (!custom) {
+    msg = '本房间规则已恢复为跟随后台默认';
+  } else {
+    msg = `本房间${what}已保存（已固化成本房间自己一份）`;
+  }
+  $('#dlgScope').close();
+  S.scope = null;
+  await refreshState();
+  toast(msg);
 }
 
 /* ------------------------------------------------ 事件绑定 */
@@ -1534,23 +1982,39 @@ function bind() {
   $('#btnJoinCancel').addEventListener('click', () => { S.joinTarget = null; $('#dlgJoin').close(); });
   $('#btnMembers').addEventListener('click', openMembers);
   $('#btnMembersClose').addEventListener('click', () => $('#dlgMembers').close());
-  $('#btnStartRound').addEventListener('click', startRound);
   $('#btnLeave').addEventListener('click', () => {
     if (!S.roomId) return;
     leaveRoom();
   });
 
   $('#btnSend').addEventListener('click', sendHostMessage);
-  $('#hostInput').addEventListener('input', (e) => autoGrow(e.target));
+  $('#hostInput').addEventListener('input', (e) => { autoGrow(e.target); updateAtMenu(); });
   $('#hostInput').addEventListener('keydown', (e) => {
+    // @ 补全浮层开着时，方向键 / Enter / Tab / Esc 先归浮层用
+    if (S.at) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveAt(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveAt(-1); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickAt(S.at.idx); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeAtMenu(); return; }
+    }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendHostMessage(); }
   });
-  $('#btnFree').addEventListener('click', freeDiscussion);
-  const autoBox = $('#autoSpeak');
-  if (autoBox) autoBox.addEventListener('change', toggleAutoSpeak);
-  $('#btnSummarize').addEventListener('click', summarize);
-  $('#gapInput').addEventListener('change', setGap);
-  $('#btnStop').addEventListener('click', stopAll);
+  $('#hostInput').addEventListener('click', updateAtMenu);
+  $('#hostInput').addEventListener('blur', () => setTimeout(closeAtMenu, 150));
+  const atBox = $('#atMenu');
+  if (atBox) {
+    // mousedown 就选中，别等 click —— 否则 textarea 先 blur、浮层先被关掉，就点不着了
+    atBox.addEventListener('mousedown', (ev) => {
+      const row = ev.target && ev.target.closest ? ev.target.closest('.at-item') : null;
+      if (!row) return;
+      ev.preventDefault();
+      pickAt(Number(row.dataset.i));
+    });
+  }
+  // 第 24 批：控制条只剩「暂停 / 继续模型发言」（替换原来的「启动新一轮 / 停止发言」
+  // 以及自动轮流 / 间隔 / 自由讨论 / 总结者那一整排）。
+  $('#btnPause').addEventListener('click', pauseModels);
+  $('#btnResume').addEventListener('click', resumeModels);
   $('#btnClear').addEventListener('click', clearRoom);
   $('#btnNewRoom').addEventListener('click', newRoom);
   $('#btnTrash').addEventListener('click', openTrash);
@@ -1589,6 +2053,75 @@ function bind() {
         : `房间「${d.room.name}」已建好，房间号 ${d.code} —— 右侧「本房间参与者」点「添加」把模型拉进来`);
       enterAsOwner(d.room.id, d.ownerKey);
     }
+  });
+
+  // 房间级「规则 / 角色」弹窗（第 17 批）
+  // ⚠️ 必须包一层：直接把 openScopeDialog 挂上去的话第一个参数会收到 MouseEvent
+  $('#btnRoomScope').addEventListener('click', () => openScopeDialog());
+  $('#btnRoomScopeBar').addEventListener('click', () => openScopeDialog(findRoom(S.roomId)));
+  // 左栏「规则」「角色」区块标题栏上的「修改」（第 19 批入口；第 20 批起**各管各的**：
+  // 规则的「修改」只改规则，角色的「修改」只改角色）
+  $('#btnEditRules').addEventListener('click', () => openScopeDialog(findRoom(S.roomId), 'rules'));
+  $('#btnEditRoles').addEventListener('click', () => openScopeDialog(findRoom(S.roomId), 'roles'));
+  $('#btnScopeClose').addEventListener('click', () => { S.scope = null; $('#dlgScope').close(); });
+  $('#btnScopeSave').addEventListener('click', saveScope);
+  $('#scopePreamble').addEventListener('input', (e) => {
+    if (!S.scope) return;
+    S.scope.preamble = e.target.value;
+    S.scope.custom = true;
+    markScopeDirty();
+  });
+  // 规则：输入改文字（列表结构不变，所以不重渲染，免得丢焦点）
+  $('#scopeRuleList').addEventListener('input', (e) => {
+    const i = parseInt(e.target.dataset.i, 10);
+    if (!S.scope || isNaN(i) || !S.scope.items[i]) return;
+    S.scope.items[i].text = e.target.value;
+    S.scope.custom = true;
+    markScopeDirty();
+  });
+  $('#scopeRuleList').addEventListener('click', (e) => {
+    const i = parseInt(e.target.dataset.i, 10);
+    if (e.target.dataset.a !== 'rule-rm' || !S.scope || isNaN(i)) return;
+    S.scope.items.splice(i, 1);
+    S.scope.custom = true;
+    renderScope();
+  });
+  // 角色：默认角色只读；自建角色可改可删
+  $('#scopeRoleList').addEventListener('input', (e) => {
+    const f = e.target.dataset.f;
+    const i = parseInt(e.target.dataset.i, 10);
+    if (!S.scope || !f || isNaN(i) || !S.scope.roles[i]) return;
+    S.scope.roles[i][f] = e.target.value;
+    S.scope.dirty = true;
+    markScopeDirty();
+  });
+  $('#scopeRoleList').addEventListener('click', (e) => {
+    const i = parseInt(e.target.dataset.i, 10);
+    if (e.target.dataset.a !== 'role-rm' || !S.scope || isNaN(i)) return;
+    S.scope.roles.splice(i, 1);
+    S.scope.dirty = true;
+    markScopeDirty();
+  });
+  $('#btnRuleAdd').addEventListener('click', () => {
+    if (!S.scope) return;
+    S.scope.items.push({ id: newRuleId(), text: '' });
+    S.scope.custom = true;
+    renderScope();
+  });
+  $('#btnRuleReset').addEventListener('click', () => {
+    if (!S.scope) return;
+    const def = defaultRules();
+    S.scope.custom = false;
+    S.scope.preamble = def.preamble || '';
+    S.scope.items = (def.items || []).map((x) => ({ id: x.id || newRuleId(), text: x.text || '' }));
+    renderScope();
+    toast('已恢复为后台的默认规则（点「保存」才生效）');
+  });
+  $('#btnRoleAddRoom').addEventListener('click', () => {
+    if (!S.scope) return;
+    S.scope.roles.push({ name: '', group: '', prompt: '' });
+    S.scope.dirty = true;
+    renderScope();
   });
 
   // 角色下拉弹窗（房间参与者）
